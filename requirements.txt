@@ -1,0 +1,11 @@
+# Tonie Audio Updater Requirements
+# 
+# Install with: pip install -r requirements.txt
+
+# Main dependency for Tonie API access
+tonie-api
+
+# Note: FFmpeg is required for video conversion but must be installed separately
+# Windows: Download from https://ffmpeg.org/download.html
+# macOS: brew install ffmpeg  
+# Ubuntu/Debian: sudo apt install ffmpeg
