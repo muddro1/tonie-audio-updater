@@ -62,26 +62,26 @@ A Python script to easily upload audio files to Creative Tonies. Supports multip
 ### Basic Usage
 
 ```bash
-python tony1.py -u your_username -p your_password -i /path/to/audio/files
+python tony.py -u your_username -p your_password -i /path/to/audio/files
 ```
 
 ### Common Options
 
 ```bash
 # Dry run (preview changes without uploading)
-python tony1.py -u username -p password -i /path/to/files --dry-run
+python tony.py -u username -p password -i /path/to/files --dry-run
 
 # Convert video files to audio
-python tony1.py -u username -p password -i /path/to/files --convert-video
+python tony.py -u username -p password -i /path/to/files --convert-video
 
 # Non-interactive mode (updates first Tonie automatically)
-python tony1.py -u username -p password -i /path/to/files --non-interactive
+python tony.py -u username -p password -i /path/to/files --non-interactive
 
 # Force update even if Tonie seems up to date
-python tony1.py -u username -p password -i /path/to/files --force-update
+python tony.py -u username -p password -i /path/to/files --force-update
 
 # Keep converted audio files instead of deleting them
-python tony1.py -u username -p password -i /path/to/files --convert-video --keep-converted
+python tony.py -u username -p password -i /path/to/files --convert-video --keep-converted
 ```
 
 ### All Options
@@ -137,17 +137,17 @@ The script provides an easy-to-use menu system:
 
 ### Upload audio files from a folder
 ```bash
-python tony1.py -u myemail@example.com -p mypassword -i ~/Music/Kids
+python tony.py -u myemail@example.com -p mypassword -i ~/Music/Kids
 ```
 
 ### Convert video files and upload
 ```bash
-python tony1.py -u myemail@example.com -p mypassword -i ~/Videos/Stories --convert-video
+python tony.py -u myemail@example.com -p mypassword -i ~/Videos/Stories --convert-video
 ```
 
 ### Preview what would be updated
 ```bash
-python tony1.py -u myemail@example.com -p mypassword -i ~/Audio --dry-run
+python tony.py -u myemail@example.com -p mypassword -i ~/Audio --dry-run
 ```
 
 ## Troubleshooting
