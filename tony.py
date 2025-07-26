@@ -52,6 +52,12 @@ parser.add_argument("--audio-bitrate", dest="audio_bitrate", default="128k",
                     help="Audio bitrate for video conversion (default: 128k)")
 parser.add_argument("--keep-converted", dest="keep_converted", action="store_true",
                     help="Keep converted audio files after upload (default: delete temporary files)")
+parser.add_argument("--trim-silence", dest="trim_silence", action="store_true",
+                    help="Trim silence at the end of converted audio files")
+parser.add_argument("--silence-threshold", dest="silence_threshold", default="-50dB",
+                    help="Silence detection threshold (default: -50dB)")
+parser.add_argument("--min-silence-duration", dest="min_silence_duration", default="2.0",
+                    help="Minimum silence duration to trigger trimming in seconds (default: 2.0)")
 
 args = parser.parse_args()
 
@@ -67,6 +73,85 @@ def check_ffmpeg():
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
+
+def detect_silence_end(audio_path):
+    """Detect the end of actual audio content (start of trailing silence)"""
+    try:
+        # Use ffmpeg's silencedetect filter to find silence
+        cmd = [
+            args.ffmpeg_path,
+            "-i", str(audio_path),
+            "-af", f"silencedetect=noise={args.silence_threshold}:d={args.min_silence_duration}",
+            "-f", "null",
+            "-"
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        # Parse the silencedetect output
+        silence_starts = []
+        silence_ends = []
+        
+        for line in result.stderr.split('\n'):
+            if 'silence_start:' in line:
+                try:
+                    start_time = float(line.split('silence_start: ')[1].split(' ')[0])
+                    silence_starts.append(start_time)
+                except (IndexError, ValueError):
+                    continue
+            elif 'silence_end:' in line:
+                try:
+                    end_time = float(line.split('silence_end: ')[1].split(' ')[0])
+                    silence_ends.append(end_time)
+                except (IndexError, ValueError):
+                    continue
+        
+        # Get the duration of the audio file
+        duration_cmd = [
+            args.ffmpeg_path,
+            "-i", str(audio_path),
+            "-f", "null",
+            "-"
+        ]
+        duration_result = subprocess.run(duration_cmd, capture_output=True, text=True)
+        
+        total_duration = None
+        for line in duration_result.stderr.split('\n'):
+            if 'Duration:' in line:
+                try:
+                    duration_str = line.split('Duration: ')[1].split(',')[0]
+                    h, m, s = duration_str.split(':')
+                    total_duration = float(h) * 3600 + float(m) * 60 + float(s)
+                    break
+                except (IndexError, ValueError):
+                    continue
+        
+        if total_duration is None:
+            logging.warning("Could not determine audio duration")
+            return None
+        
+        # Find the last silence that extends to the end of the file
+        if silence_starts:
+            # Check if the last silence period extends to near the end
+            last_silence_start = silence_starts[-1]
+            
+            # If there's trailing silence that starts before the end and continues to the end
+            # (or very close to it), we want to trim from that point
+            if total_duration - last_silence_start >= float(args.min_silence_duration):
+                # Verify this silence continues to near the end
+                if len(silence_ends) < len(silence_starts) or silence_ends[-1] < last_silence_start:
+                    # Silence continues to the end
+                    return last_silence_start
+                elif len(silence_ends) >= len(silence_starts):
+                    # Check if the gap between last silence end and file end is small
+                    if total_duration - silence_ends[-1] < 1.0:  # Less than 1 second of audio after last silence
+                        return last_silence_start
+        
+        return None
+        
+    except subprocess.CalledProcessError as e:
+        logging.warning(f"Failed to detect silence in {audio_path}: {e}")
+        return None
 
 def truncate_title(title, max_length=100):
     """Truncate title to maximum length while preserving readability"""
@@ -84,7 +169,7 @@ def truncate_title(title, max_length=100):
         return truncated[:max_length-3] + "..."
 
 def convert_video_to_audio(video_path, output_dir=None):
-    """Convert video file to MP3 using ffmpeg"""
+    """Convert video file to MP3 using ffmpeg, optionally trimming trailing silence"""
     video_path = Path(video_path)
     
     if output_dir is None:
@@ -119,6 +204,36 @@ def convert_video_to_audio(video_path, output_dir=None):
         
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         logging.debug(f"ffmpeg output: {result.stderr}")
+        
+        # If silence trimming is enabled, detect and trim trailing silence
+        if args.trim_silence:
+            logging.info(f"Analyzing audio for trailing silence: {audio_path.name}")
+            trim_point = detect_silence_end(audio_path)
+            
+            if trim_point is not None:
+                logging.info(f"Trimming trailing silence from {trim_point:.1f}s to end")
+                
+                # Create trimmed version
+                trimmed_path = audio_path.parent / f"{audio_path.stem}_trimmed{audio_path.suffix}"
+                
+                trim_cmd = [
+                    args.ffmpeg_path,
+                    "-i", str(audio_path),
+                    "-t", str(trim_point),  # Trim to the silence start point
+                    "-acodec", "copy",  # Copy audio codec to avoid re-encoding
+                    "-y",
+                    str(trimmed_path)
+                ]
+                
+                trim_result = subprocess.run(trim_cmd, capture_output=True, text=True, check=True)
+                
+                # Replace original with trimmed version
+                os.remove(audio_path)
+                os.rename(trimmed_path, audio_path)
+                
+                logging.info(f"Successfully trimmed {audio_path.name}")
+            else:
+                logging.info(f"No significant trailing silence detected in {audio_path.name}")
         
         return str(audio_path)
         
@@ -175,6 +290,9 @@ def get_audio_files(input_path):
                 logging.info(f"Auto-converting {len(video_files)} video files to audio")
             else:
                 logging.info(f"Found {len(video_files)} video files to convert")
+            
+            if args.trim_silence:
+                logging.info(f"Silence trimming enabled (threshold: {args.silence_threshold}, min duration: {args.min_silence_duration}s)")
             
             # Create temp directory for converted files if not keeping them
             temp_dir = None
@@ -313,6 +431,8 @@ def display_tonies_menu(tonies, tonie_households, audio_files):
     if converted_count > 0:
         print(f"  - {len(audio_files) - converted_count} original audio files")
         print(f"  - {converted_count} converted from video files")
+        if args.trim_silence:
+            print(f"  - Silence trimming enabled for converted files")
     
     for i, audio in enumerate(audio_files[:5], 1):  # Show first 5 files
         status = " (converted)" if audio.is_converted else ""
