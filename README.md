@@ -23,7 +23,7 @@ A Python script to easily upload audio files to Creative Tonies. Supports multip
 
 1. **Clone this repository:**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/tonie-audio-updater.git
+   git clone https://github.com/muddro1/tonie-audio-updater.git
    cd tonie-audio-updater
    ```
 
