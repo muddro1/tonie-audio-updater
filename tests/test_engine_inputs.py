@@ -160,3 +160,102 @@ def test_probe_url_raises_with_the_reason(configure, monkeypatch):
 def test_check_ytdlp_is_false_when_absent(configure):
     configure("--ytdlp-path", "/nonexistent/yt-dlp")
     assert tony.check_ytdlp() is False
+
+
+import os
+
+
+def _fake_download(monkeypatch, tmp_path, titles):
+    """Stand in for a yt-dlp download: write real files, report them as it does."""
+    written = []
+
+    def fake_run(cmd, *a, **kw):
+        if "-o" not in cmd:
+            # check_ytdlp's "--version" probe, or anything else that isn't the
+            # download invocation itself - report success without downloading.
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        out_dir = cmd[cmd.index("-o") + 1].rsplit("/", 1)[0]
+        os.makedirs(out_dir, exist_ok=True)
+        lines = []
+        for title in titles:
+            path = os.path.join(out_dir, f"{title}.mp3")
+            with open(path, "wb") as f:
+                f.write(b"\xff\xfb\x90\x00" * 64)  # plausible mp3 bytes
+            written.append(path)
+            lines.append(json.dumps({"title": title, "filepath": path}))
+        return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(lines), stderr="")
+
+    monkeypatch.setattr(tony.subprocess, "run", fake_run)
+    return written
+
+
+def test_download_url_returns_paths_and_titles(configure, monkeypatch, tmp_path):
+    configure()
+    _fake_download(monkeypatch, tmp_path, ["The Sleepy Fox"])
+
+    got = tony.download_url("https://example.com/watch?v=abc", str(tmp_path))
+
+    assert len(got) == 1
+    assert got[0]["title"] == "The Sleepy Fox"
+    assert os.path.exists(got[0]["filepath"])
+
+
+def test_download_url_raises_with_the_reason(configure, monkeypatch, tmp_path):
+    configure()
+
+    def fake_run(cmd, *a, **kw):
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="ERROR: Video unavailable")
+
+    monkeypatch.setattr(tony.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Video unavailable"):
+        tony.download_url("https://example.com/gone", str(tmp_path))
+
+
+def test_get_audio_files_downloads_a_url(configure, monkeypatch, tmp_path):
+    configure("--no-duration-limit")
+    _fake_download(monkeypatch, tmp_path, ["Downloaded Story"])
+
+    files = tony.get_audio_files(["https://example.com/watch?v=abc"])
+
+    assert [f.title for f in files] == ["Downloaded Story"]
+    assert files[0].is_downloaded is True
+
+
+def test_a_downloaded_file_is_registered_for_cleanup(configure, monkeypatch, tmp_path):
+    configure("--no-duration-limit")
+    _fake_download(monkeypatch, tmp_path, ["Downloaded Story"])
+
+    files = tony.get_audio_files(["https://example.com/watch?v=abc"])
+    path = files[0].filepath
+
+    assert path in tony._converted_files
+    tony.cleanup_converted_files()
+    assert not os.path.exists(path)
+
+
+def test_a_url_title_is_truncated_like_a_filename(configure, monkeypatch, tmp_path):
+    configure("--no-duration-limit")
+    _fake_download(monkeypatch, tmp_path, ["x" * 200])
+
+    files = tony.get_audio_files(["https://example.com/watch?v=abc"])
+
+    assert len(files[0].title) <= 100
+
+
+def test_urls_and_paths_mix(configure, monkeypatch, tone_file, tmp_path):
+    local = tone_file(2, "local.mp3")
+    configure("--no-duration-limit")
+    _fake_download(monkeypatch, tmp_path / "dl", ["Remote"])
+
+    files = tony.get_audio_files([str(local), "https://example.com/watch?v=abc"])
+
+    assert sorted(f.title for f in files) == ["Remote", "local"]
+
+
+def test_a_url_without_ytdlp_is_a_clear_error(configure):
+    configure("--ytdlp-path", "/nonexistent/yt-dlp")
+
+    with pytest.raises(FileNotFoundError, match="yt-dlp"):
+        tony.get_audio_files(["https://example.com/watch?v=abc"])

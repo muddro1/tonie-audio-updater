@@ -22,6 +22,7 @@ class AudioTitle:
     title: str
     is_converted: bool = False  # Track if this was converted from video
     is_capped: bool = False  # Track if this was truncated to the duration limit
+    is_downloaded: bool = False  # Track if this was fetched from a link
     duration: Optional[float] = None  # Duration in seconds, when known
     
     def __eq__(self, other):
@@ -231,6 +232,52 @@ def probe_url(url):
 
     return [entry_of(payload, url)]
 
+def download_url(url, output_dir):
+    """Download a link's audio into output_dir.
+
+    Returns one entry per downloaded file, each with its filepath and the title as the
+    site reports it - a better chapter title than a filename. Extraction uses the same
+    --audio-bitrate as video conversion.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    cmd = [
+        args.ytdlp_path,
+        "-x",                                  # audio only
+        "--audio-format", "mp3",
+        "--audio-quality", args.audio_bitrate,
+        "--no-playlist-reverse",
+        "--print-to-file", "%(title)s", os.devnull,  # keep stdout clean for JSON
+        # "after_move" - otherwise filepath prints before extraction/rename and is NA
+        "--print", 'after_move:{"title":%(title)j,"filepath":%(filepath)j}',
+        "--no-simulate",
+        "-o", os.path.join(output_dir, "%(title)s.%(ext)s"),
+        url,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        reason = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown error"
+        raise RuntimeError(f"Could not download {url}: {reason}")
+
+    downloaded = []
+    for line in result.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if item.get("filepath"):
+            downloaded.append({"filepath": item["filepath"],
+                               "title": item.get("title") or "Untitled"})
+
+    if not downloaded:
+        raise RuntimeError(f"Could not download {url}: yt-dlp reported no output file")
+
+    return downloaded
+
 def get_audio_duration(audio_path):
     """Get the duration of an audio file in seconds, or None if it can't be read"""
     try:
@@ -416,14 +463,16 @@ def convert_video_to_audio(video_path, output_dir=None):
         raise
 
 def collect_input_files(input_paths):
-    """Expand the -i arguments into (audio_paths, video_paths).
+    """Expand the -i arguments into (audio_paths, video_paths, urls).
 
     A directory is scanned. A file named directly is taken as given, provided its
-    extension is one we handle. Order is preserved and duplicates are dropped, so
-    naming a file twice, or naming a file inside a directory also given, uploads it once.
+    extension is one we handle. A link is set aside for downloading rather than
+    treated as a path. Order is preserved and duplicates are dropped, so naming a
+    file twice, or naming a file inside a directory also given, uploads it once.
     """
     audio_paths = []
     video_paths = []
+    urls = []
     seen = set()
 
     def remember(path, bucket):
@@ -434,6 +483,11 @@ def collect_input_files(input_paths):
         bucket.append(path)
 
     for raw in input_paths:
+        if is_url(raw):
+            if raw not in urls:
+                urls.append(raw)
+            continue
+
         if os.path.isdir(raw):
             for found in find_files(raw, AUDIO_EXTENSIONS):
                 remember(found, audio_paths)
@@ -455,20 +509,40 @@ def collect_input_files(input_paths):
                 f"{', '.join(AUDIO_EXTENSIONS)}; video: {', '.join(VIDEO_EXTENSIONS)}"
             )
 
-    return audio_paths, video_paths
+    return audio_paths, video_paths, urls
 
 def get_audio_files(input_paths):
     """Get all audio files from the input paths, optionally converting video files"""
     audio_files = []
     converted_files = []  # Track converted files for cleanup
 
-    audio_paths, video_paths = collect_input_files(input_paths)
+    audio_paths, video_paths, urls = collect_input_files(input_paths)
 
     for audio_file in audio_paths:
         title = os.path.splitext(os.path.basename(audio_file))[0]
         # Truncate title to 100 characters
         title = truncate_title(title, 100)
         audio_files.append(AudioTitle(filepath=audio_file, title=title))
+
+    # Fetch links
+    if urls:
+        if not check_ytdlp():
+            raise FileNotFoundError(
+                f"yt-dlp not found at '{args.ytdlp_path}'. It is required for links. "
+                f"Install it with: brew install yt-dlp"
+            )
+
+        download_dir = (tempfile.mkdtemp(prefix="tonie_download_")
+                        if not args.keep_converted else os.getcwd())
+        logging.info(f"Downloading {len(urls)} link(s) to {download_dir}")
+
+        for url in urls:
+            for item in download_url(url, download_dir):
+                title = truncate_title(item["title"], 100)
+                audio_files.append(AudioTitle(filepath=item["filepath"], title=title,
+                                              is_downloaded=True))
+                converted_files.append(item["filepath"])
+                logging.info(f"Downloaded: {title}")
 
     # Check if we need to auto-enable video conversion
     auto_convert_video = False
@@ -1006,6 +1080,8 @@ def describe_audio_file(audio_file):
     notes = []
     if audio_file.is_converted:
         notes.append("converted from video")
+    if audio_file.is_downloaded:
+        notes.append("downloaded")
     if audio_file.is_capped:
         notes.append(f"truncated to {args.max_duration:g} min")
     return f" ({', '.join(notes)})" if notes else ""
