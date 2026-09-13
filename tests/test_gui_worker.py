@@ -1,5 +1,6 @@
 """The worker thread, its log bridge, and cancellation."""
 import logging
+import threading
 
 import pytest
 
@@ -46,6 +47,57 @@ def test_the_bridge_is_removed_when_the_worker_ends(qtbot):
     with qtbot.waitSignal(worker.done, timeout=3000):
         worker.start()
     assert len(logging.getLogger().handlers) == before
+
+
+def test_a_concurrent_run_is_rejected_without_touching_the_logger(qtbot):
+    root = logging.getLogger()
+    handlers_at_start = list(root.handlers)
+    level_at_start = root.level
+
+    gate = threading.Event()
+    entered = threading.Event()
+
+    def blocking_work():
+        entered.set()
+        gate.wait(timeout=3)
+        return None
+
+    first = Worker(blocking_work)
+    first.start()
+    assert entered.wait(timeout=3)
+
+    handlers_mid_run = list(root.handlers)
+    level_mid_run = root.level
+
+    second = Worker(lambda: None)
+    with qtbot.waitSignal(second.failed, timeout=3000) as blocker:
+        second.start()
+
+    assert "already running" in blocker.args[0].lower()
+    # The invariant this fix exists to protect: a rejected second worker must not
+    # have touched the root logger's handlers or level at all.
+    assert list(root.handlers) == handlers_mid_run
+    assert root.level == level_mid_run
+
+    with qtbot.waitSignal(first.done, timeout=3000):
+        gate.set()
+
+    assert list(root.handlers) == handlers_at_start
+    assert root.level == level_at_start
+
+
+def test_a_worker_can_run_again_once_the_lock_is_free(qtbot):
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+    level_before = root.level
+
+    worker = Worker(lambda: 1 + 1)
+    with qtbot.waitSignal(worker.done, timeout=3000) as blocker:
+        worker.start()
+
+    assert blocker.args[0] == 2
+    assert list(root.handlers) == handlers_before
+    assert root.level == level_before
 
 
 def test_cancel_is_visible_to_the_work(qtbot):
