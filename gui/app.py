@@ -6,6 +6,7 @@ gui.state. This module holds widgets and wiring, and as little judgement as poss
 import os
 import sys
 import threading
+from types import SimpleNamespace
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
@@ -102,10 +103,12 @@ class MainWindow(QMainWindow):
         self._synchronous = synchronous
         self._cancel = threading.Event()
         self._username, self._password = signin.load_saved()
+        self._install_command = ""
 
         self._build_ui()
         self.setAcceptDrops(True)
         self.refresh_summary()
+        self.refresh_banner()
 
     # ------------------------------------------------------------------ building
 
@@ -130,6 +133,11 @@ class MainWindow(QMainWindow):
         self.banner_label = QLabel("")
         self.banner_label.setWordWrap(True)
         row.addWidget(self.banner_label, 1)
+
+        self.banner_copy_button = QPushButton("Copy install command")
+        self.banner_copy_button.setVisible(False)
+        self.banner_copy_button.clicked.connect(self._copy_install_command)
+        row.addWidget(self.banner_copy_button)
 
         dismiss = QPushButton("Dismiss")
         dismiss.clicked.connect(self.hide_banner)
@@ -646,12 +654,67 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------------- banner
 
     def show_banner(self, message):
+        self.banner_copy_button.setVisible(False)
         self.banner_label.setText(message)
         self.banner.setVisible(True)
 
     def hide_banner(self):
+        self.banner_copy_button.setVisible(False)
         self.banner_label.setText("")
         self.banner.setVisible(False)
+
+    def tool_warnings(self):
+        """One entry per missing tool: (message, install command).
+
+        check_ffmpeg/check_ytdlp read tony.args.ffmpeg_path/ytdlp_path, which is only
+        populated once the window applies its state for a real upload (gui.state.apply)
+        - so it can still be None here, for as long as the window has had no sources to
+        apply. The path fields carry the same values apply() would send, so they are
+        borrowed just long enough to answer "is the tool on PATH", then put back
+        exactly as found - this must never leave a lasting mark on tony.args.
+        """
+        previous_args = tony.args
+        if tony.args is None:
+            tony.args = SimpleNamespace(ffmpeg_path=self.ffmpeg_path.text(),
+                                        ytdlp_path=self.ytdlp_path.text())
+        try:
+            warnings = []
+
+            if not tony.check_ffmpeg():
+                warnings.append((
+                    "FFmpeg is not installed. Video conversion, silence trimming, the "
+                    "duration check and links are unavailable; plain audio still "
+                    "uploads.",
+                    "brew install ffmpeg",
+                ))
+
+            if not tony.check_ytdlp():
+                warnings.append((
+                    "yt-dlp is not installed. Links and playlists are unavailable; "
+                    "files and folders still work.",
+                    "brew install yt-dlp",
+                ))
+
+            return warnings
+        finally:
+            tony.args = previous_args
+
+    def banner_text(self):
+        return "\n".join(f"{message} ({command})"
+                         for message, command in self.tool_warnings())
+
+    def refresh_banner(self):
+        warnings = self.tool_warnings()
+        if warnings:
+            self._install_command = "; ".join(c for _, c in warnings)
+            self.show_banner(self.banner_text())
+            self.banner_copy_button.setVisible(True)
+        else:
+            self._install_command = ""
+            self.hide_banner()
+
+    def _copy_install_command(self):
+        QApplication.clipboard().setText(self._install_command)
 
     # -------------------------------------------------------------------- upload
 
