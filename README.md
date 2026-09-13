@@ -349,6 +349,10 @@ export TONIE_PASSWORD='your-password'
 python tony.py -i /path/to/files --non-interactive --tonie "Elephant"
 ```
 
+In `--non-interactive` mode there is nowhere to prompt, so the username and password
+must come from the environment or the flags. The script says so plainly rather than
+hanging on a prompt no one can answer.
+
 Credentials are never stored or logged by the script.
 
 ## Non-Interactive Runs

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user running `ps` and written to shell history. `-u` and `-p` are now optional and
   fall back to `$TONIE_USERNAME` and `$TONIE_PASSWORD`, then to a prompt that reads the
   password without echoing it.
+- A non-interactive run never prompts, since a cron job has no terminal to prompt on.
+  Missing credentials there are reported as an error instead of hanging.
 
 ### Added
 - `--tonie NAME` selects the Creative Tonie to update in non-interactive runs

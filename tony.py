@@ -106,16 +106,30 @@ def resolve_credentials(parsed_args):
     username = parsed_args.username or os.environ.get("TONIE_USERNAME")
     password = parsed_args.password or os.environ.get("TONIE_PASSWORD")
 
-    if not username:
-        username = input("Tonie account username: ").strip()
-    if not password:
-        password = getpass.getpass("Tonie account password: ")
+    # A non-interactive run has nowhere to prompt - a cron job has no terminal, so
+    # asking would either hang or die on end of input
+    if parsed_args.non_interactive:
+        if not username:
+            raise ValueError("No username. In non-interactive mode set $TONIE_USERNAME "
+                             "or pass -u; there is nowhere to prompt.")
+        if not password:
+            raise ValueError("No password. In non-interactive mode set $TONIE_PASSWORD; "
+                             "there is nowhere to prompt.")
+        return username, password
+
+    try:
+        if not username:
+            username = input("Tonie account username: ").strip()
+        if not password:
+            password = getpass.getpass("Tonie account password: ")
+    except EOFError:
+        pass  # Nothing on stdin to read; reported as a missing credential below
 
     if not username:
-        raise ValueError("A username is required. Pass -u, set $TONIE_USERNAME, "
+        raise ValueError("No username given. Pass -u, set $TONIE_USERNAME, "
                          "or enter one when prompted.")
     if not password:
-        raise ValueError("A password is required. Set $TONIE_PASSWORD, enter one when "
+        raise ValueError("No password given. Set $TONIE_PASSWORD, enter one when "
                          "prompted, or pass -p (which exposes it to `ps`).")
 
     return username, password

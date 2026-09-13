@@ -678,3 +678,28 @@ def test_end_of_input_exits_cleanly_at_the_confirmation(configure, monkeypatch):
         tony.confirm_selection([FakeTonie("Lion")], {"t1": "Home"}, _files("One"))
 
     assert excinfo.value.code == 0
+
+
+def test_non_interactive_never_blocks_on_a_credential_prompt(monkeypatch):
+    """A cron job has no TTY - prompting there hangs or dies on EOF."""
+    monkeypatch.delenv("TONIE_USERNAME", raising=False)
+    monkeypatch.delenv("TONIE_PASSWORD", raising=False)
+
+    def explode(_):
+        raise AssertionError("prompted in non-interactive mode")
+
+    monkeypatch.setattr("builtins.input", explode)
+    monkeypatch.setattr(tony.getpass, "getpass", explode)
+    a = tony.build_parser().parse_args(["-i", "/tmp", "--non-interactive"])
+
+    with pytest.raises(ValueError, match="TONIE_PASSWORD|TONIE_USERNAME"):
+        tony.resolve_credentials(a)
+
+
+def test_end_of_input_at_the_credential_prompt_is_a_clean_error(monkeypatch):
+    monkeypatch.delenv("TONIE_USERNAME", raising=False)
+    monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(EOFError()))
+    a = tony.build_parser().parse_args(["-i", "/tmp"])
+
+    with pytest.raises(ValueError, match="[Nn]o username"):
+        tony.resolve_credentials(a)
