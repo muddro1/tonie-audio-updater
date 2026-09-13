@@ -314,7 +314,7 @@ def test_chapter_rows_show_their_duration(window, configure, monkeypatch):
 
     window.set_tonies([tonie], {})
 
-    assert window._tonie_rows()[0].child(0).text(1) == tony.format_duration(724.0)
+    assert window._tonie_rows()[0].child(0).text(2) == tony.format_duration(724.0)
 
 
 def test_a_tonie_with_no_chapters_has_no_children(window, configure, monkeypatch):

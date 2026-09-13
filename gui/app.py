@@ -523,7 +523,7 @@ class MainWindow(QMainWindow):
                     title = getattr(chapter, "title", "Untitled")
                     seconds = getattr(chapter, "seconds", None)
                     duration = tony.format_duration(seconds) if seconds is not None else ""
-                    child = QTreeWidgetItem([f"{i}. {title}", duration])
+                    child = QTreeWidgetItem([f"{i}. {title}", "", duration])
                     child.setFlags(Qt.ItemIsEnabled)
                     row.addChild(child)
 
