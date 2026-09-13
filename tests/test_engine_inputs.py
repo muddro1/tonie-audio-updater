@@ -1,4 +1,7 @@
 """Tests for -i accepting several paths, files as well as directories."""
+import json
+import subprocess
+
 import pytest
 
 import tony
@@ -62,3 +65,98 @@ def test_the_parser_takes_several_inputs():
 def test_the_parser_still_takes_one_input():
     a = tony.build_parser().parse_args(["-i", "/only"])
     assert a.input_paths == ["/only"]
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("https://example.com/watch?v=a", True),
+    ("http://example.com/watch?v=a", True),
+    ("HTTPS://EXAMPLE.COM/x", True),
+    ("/Users/me/file.mp3", False),
+    ("~/Music", False),
+    ("file.mp3", False),
+    ("", False),
+])
+def test_is_url(value, expected):
+    assert tony.is_url(value) is expected
+
+
+def _fake_ytdlp(monkeypatch, payload, returncode=0, stderr=""):
+    """Replace the yt-dlp invocation with canned JSON."""
+    def fake_run(cmd, *a, **kw):
+        return subprocess.CompletedProcess(
+            cmd, returncode, stdout=json.dumps(payload), stderr=stderr)
+    monkeypatch.setattr(tony.subprocess, "run", fake_run)
+
+
+def test_probe_url_reads_a_single_video(configure, monkeypatch):
+    configure()
+    _fake_ytdlp(monkeypatch, {
+        "id": "abc", "title": "The Sleepy Fox", "duration": 724.0,
+        "webpage_url": "https://example.com/watch?v=abc",
+    })
+
+    items = tony.probe_url("https://example.com/watch?v=abc")
+
+    assert items == [{
+        "url": "https://example.com/watch?v=abc",
+        "title": "The Sleepy Fox",
+        "duration": 724.0,
+    }]
+
+
+def test_probe_url_expands_a_playlist(configure, monkeypatch):
+    configure()
+    _fake_ytdlp(monkeypatch, {
+        "_type": "playlist", "title": "Bedtime",
+        "entries": [
+            {"title": "One", "duration": 60.0, "url": "https://example.com/1"},
+            {"title": "Two", "duration": 90.0, "url": "https://example.com/2"},
+        ],
+    })
+
+    items = tony.probe_url("https://example.com/playlist?list=xyz")
+
+    assert [i["title"] for i in items] == ["One", "Two"]
+    assert [i["duration"] for i in items] == [60.0, 90.0]
+
+
+def test_probe_url_tolerates_a_missing_duration(configure, monkeypatch):
+    configure()
+    _fake_ytdlp(monkeypatch, {
+        "_type": "playlist",
+        "entries": [{"title": "Live", "url": "https://example.com/live"}],
+    })
+
+    assert tony.probe_url("https://example.com/x")[0]["duration"] is None
+
+
+def test_probe_url_skips_unavailable_playlist_entries(configure, monkeypatch):
+    """yt-dlp reports a removed or private video as a null entry."""
+    configure()
+    _fake_ytdlp(monkeypatch, {
+        "_type": "playlist",
+        "entries": [
+            {"title": "Fine", "duration": 10.0, "url": "https://example.com/1"},
+            None,
+        ],
+    })
+
+    assert [i["title"] for i in tony.probe_url("https://example.com/x")] == ["Fine"]
+
+
+def test_probe_url_raises_with_the_reason(configure, monkeypatch):
+    configure()
+
+    def fake_run(cmd, *a, **kw):
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="ERROR: Private video")
+
+    monkeypatch.setattr(tony.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Private video"):
+        tony.probe_url("https://example.com/private")
+
+
+def test_check_ytdlp_is_false_when_absent(configure):
+    configure("--ytdlp-path", "/nonexistent/yt-dlp")
+    assert tony.check_ytdlp() is False

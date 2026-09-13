@@ -4,6 +4,7 @@
 from collections import Counter
 
 import getpass
+import json
 import logging
 import time
 import os
@@ -70,6 +71,8 @@ Usage: {os.path.basename(__file__)} [options]
                         help="Convert video files (MKV, MP4, AVI, MOV) to MP3 audio")
     parser.add_argument("--ffmpeg-path", dest="ffmpeg_path", default="ffmpeg",
                         help="Path to ffmpeg executable (default: ffmpeg)")
+    parser.add_argument("--ytdlp-path", dest="ytdlp_path", default="yt-dlp",
+                        help="Path to the yt-dlp executable (default: yt-dlp)")
     parser.add_argument("--audio-bitrate", dest="audio_bitrate", default="128k",
                         help="Audio bitrate for video conversion (default: 128k)")
     parser.add_argument("--keep-converted", dest="keep_converted", action="store_true",
@@ -170,11 +173,63 @@ def find_files(directory, extensions):
 def check_ffmpeg():
     """Check if ffmpeg is available"""
     try:
-        subprocess.run([args.ffmpeg_path, "-version"], 
+        subprocess.run([args.ffmpeg_path, "-version"],
                       capture_output=True, check=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
+
+def is_url(value):
+    """True if this input is a link rather than a path"""
+    return str(value).lower().startswith(("http://", "https://"))
+
+def check_ytdlp():
+    """Check if yt-dlp is available"""
+    try:
+        subprocess.run([args.ytdlp_path, "--version"],
+                       capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def probe_url(url):
+    """Read what a link holds without downloading it.
+
+    Returns one entry per video - a playlist expands, a single video is a list of one -
+    each with its url, title and duration in seconds. Duration is None when yt-dlp does
+    not report one, as for a live stream.
+    """
+    cmd = [
+        args.ytdlp_path,
+        "-J",                 # JSON metadata
+        "--flat-playlist",    # do not resolve every entry fully
+        "--no-warnings",
+        url,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        reason = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown error"
+        raise RuntimeError(f"Could not read {url}: {reason}")
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Could not read {url}: unexpected output from yt-dlp ({e})")
+
+    def entry_of(item, fallback_url):
+        return {
+            "url": item.get("webpage_url") or item.get("url") or fallback_url,
+            "title": item.get("title") or "Untitled",
+            "duration": item.get("duration"),
+        }
+
+    if payload.get("_type") == "playlist":
+        # A removed or private video appears as a null entry
+        return [entry_of(item, url) for item in payload.get("entries") or [] if item]
+
+    return [entry_of(payload, url)]
 
 def get_audio_duration(audio_path):
     """Get the duration of an audio file in seconds, or None if it can't be read"""
