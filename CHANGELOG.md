@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **90-Minute Duration Limit**
+  - Checks total runtime against the 90 minute Creative Tonie limit before uploading
+  - A single file longer than the limit is truncated to just under 90 minutes; the
+    source file is never modified, a temporary copy is uploaded instead
+  - Truncated output is measured and retried if it lands over the limit, since stream
+    copying can only cut on a frame boundary and the Tonie service is strict
+  - Aborts before any Creative Tonie is modified if a file needs truncating but cannot
+    be, rather than clearing the Tonie's chapters for an upload that would be rejected
+  - A set of several files that exceeds the limit is reported as a warning in the log and
+    on the confirmation screen, but never truncated
+  - Total runtime is shown on the confirmation screen
+  - New `--max-duration` option to change the limit (default: 90 minutes)
+  - New `--no-duration-limit` option to skip the check entirely
+  - Skipped with a warning rather than failing when FFmpeg is unavailable
+
+### Changed
+- Temporary file cleanup now handles more than one temporary directory
+
 ## [1.0.0] - 2025-06-23
 
 ### Added

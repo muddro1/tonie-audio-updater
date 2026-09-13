@@ -7,6 +7,7 @@ A Python script to easily upload audio files to Creative Tonies. Supports multip
 - 🎵 **Multiple Audio Formats**: Supports MP3, WAV, M4A, and OGG files
 - 🎬 **Video Conversion**: Automatically converts MKV, MP4, AVI, MOV files to MP3 using FFmpeg
 - ✂️ **Silence Trimming**: Intelligently removes trailing silence from converted audio files
+- ⏱️ **90-Minute Limit**: Truncates a single over-long file to the 90 minute Creative Tonie limit, and warns when a set of files exceeds it
 - 🏠 **Multi-Household Support**: Works with Creative Tonies across multiple households
 - 🎯 **Smart Updates**: Only updates Tonies when content has changed
 - 📋 **Interactive Menu**: Easy-to-use interface for selecting which Tonies to update
@@ -89,6 +90,12 @@ python tony.py -u username -p password -i /path/to/files --convert-video --keep-
 
 # Custom silence detection settings
 python tony.py -u username -p password -i /path/to/files --convert-video --trim-silence --silence-threshold -40dB --min-silence-duration 3.0
+
+# Raise or lower the duration limit (default: 90 minutes)
+python tony.py -u username -p password -i /path/to/files --max-duration 60
+
+# Upload a long file untouched, without the duration check
+python tony.py -u username -p password -i /path/to/files --no-duration-limit
 ```
 
 ### All Options
@@ -108,6 +115,8 @@ python tony.py -u username -p password -i /path/to/files --convert-video --trim-
 | `--trim-silence` | Trim silence at the end of converted audio files |
 | `--silence-threshold` | Silence detection threshold (default: -50dB) |
 | `--min-silence-duration` | Minimum silence duration to trigger trimming in seconds (default: 2.0) |
+| `--max-duration` | Maximum minutes a Creative Tonie accepts; a single longer file is truncated to this length (default: 90) |
+| `--no-duration-limit` | Skip the duration limit check entirely (no truncation, no warning) |
 
 ## Silence Trimming Feature
 
@@ -145,6 +154,58 @@ python tony.py -u username -p password -i /path/to/videos --convert-video --trim
 # Custom settings for both threshold and duration
 python tony.py -u username -p password -i /path/to/videos --convert-video --trim-silence --silence-threshold -45dB --min-silence-duration 1.5
 ```
+
+## Duration Limit
+
+A Creative Tonie holds a maximum of **90 minutes** of audio. The script checks the total
+runtime before uploading so you find out up front instead of watching the upload fail.
+
+### How the Limit Is Applied
+
+1. **Measurement**: Every file's duration is read with FFmpeg after any video conversion
+   and silence trimming, so the check reflects the audio as it will actually be uploaded
+2. **One file over the limit**: The file is truncated to just under 90 minutes, and the
+   result is measured to confirm it fits before the upload goes ahead
+3. **Several files over the limit**: Nothing is truncated - the total is reported as a
+   warning, both in the log and on the confirmation screen, since which file to shorten
+   is your call
+4. **Under the limit**: Nothing changes; the total runtime is shown on the confirmation
+   screen
+
+### Why It Lands Just Under 90 Minutes
+
+The Tonie service enforces the limit strictly, and truncating without re-encoding can
+only cut on an audio frame boundary - so asking for exactly 90:00 produces a file a few
+milliseconds *over*, which gets rejected. The script therefore aims about a second below
+the limit and measures the result, widening the gap and retrying if the file still comes
+out over. Expect a truncated file to run around 89:59.
+
+If a file needs truncating but cannot be truncated, the script **stops before touching
+any Creative Tonie**. Uploading it would clear the Tonie's existing chapters first and
+then be rejected, leaving you with an empty Tonie.
+
+### Your Source Files Are Never Modified
+
+Truncation always writes a **copy** to a temporary directory and uploads that. The
+original file in your input directory is left exactly as it was, and the temporary copy
+is deleted after the upload (unless you pass `--keep-converted`).
+
+### Examples
+
+```bash
+# Default: a single file longer than 90 minutes is truncated to 90 minutes
+python tony.py -u username -p password -i /path/to/files
+
+# Truncate to 60 minutes instead
+python tony.py -u username -p password -i /path/to/files --max-duration 60
+
+# Turn the check off completely
+python tony.py -u username -p password -i /path/to/files --no-duration-limit
+```
+
+> **Note**: The duration check needs FFmpeg. If FFmpeg isn't installed and you're
+> uploading plain audio files, the check is skipped with a warning and everything else
+> works as before.
 
 ## How It Works
 

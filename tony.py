@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 from argparse import ArgumentParser
 from dataclasses import dataclass
+from typing import Optional
 
 from tonie_api.api import TonieAPI
 from tonie_api.models import Config, CreativeTonie, User
@@ -20,6 +21,8 @@ class AudioTitle:
     filepath: str
     title: str
     is_converted: bool = False  # Track if this was converted from video
+    is_capped: bool = False  # Track if this was truncated to the duration limit
+    duration: Optional[float] = None  # Duration in seconds, when known
     
     def __eq__(self, other):
         return self.title == other.title    
@@ -58,12 +61,21 @@ parser.add_argument("--silence-threshold", dest="silence_threshold", default="-5
                     help="Silence detection threshold (default: -50dB)")
 parser.add_argument("--min-silence-duration", dest="min_silence_duration", default="2.0",
                     help="Minimum silence duration to trigger trimming in seconds (default: 2.0)")
+parser.add_argument("--max-duration", dest="max_duration", type=float, default=90.0,
+                    help="Maximum minutes a Creative Tonie accepts; a single longer file is truncated to this length (default: 90)")
+parser.add_argument("--no-duration-limit", dest="no_duration_limit", action="store_true",
+                    help="Skip the duration limit check entirely (no truncation, no warning)")
 
 args = parser.parse_args()
 
 # Setup logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, 
                    format='%(asctime)s | %(levelname)s | %(message)s')
+
+# The Tonie service enforces its duration limit strictly, and stream copying can only
+# cut on a frame boundary. Aim this far under the limit so the result fits.
+CAP_SAFETY_MARGIN = 1.0  # seconds
+CAP_MAX_ATTEMPTS = 4  # margin widens each attempt: 1s, 5s, 21s, 85s
 
 def check_ffmpeg():
     """Check if ffmpeg is available"""
@@ -73,6 +85,39 @@ def check_ffmpeg():
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
+
+def get_audio_duration(audio_path):
+    """Get the duration of an audio file in seconds, or None if it can't be read"""
+    try:
+        cmd = [
+            args.ffmpeg_path,
+            "-i", str(audio_path),
+            "-f", "null",
+            "-"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        for line in result.stderr.split('\n'):
+            if 'Duration:' in line:
+                try:
+                    duration_str = line.split('Duration: ')[1].split(',')[0]
+                    h, m, s = duration_str.split(':')
+                    return float(h) * 3600 + float(m) * 60 + float(s)
+                except (IndexError, ValueError):
+                    continue
+
+        return None
+
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logging.warning(f"Failed to read duration of {audio_path}: {e}")
+        return None
+
+def format_duration(seconds):
+    """Format a duration in seconds as H:MM:SS"""
+    total = int(round(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}"
 
 def detect_silence_end(audio_path):
     """Detect the end of actual audio content (start of trailing silence)"""
@@ -107,25 +152,8 @@ def detect_silence_end(audio_path):
                     continue
         
         # Get the duration of the audio file
-        duration_cmd = [
-            args.ffmpeg_path,
-            "-i", str(audio_path),
-            "-f", "null",
-            "-"
-        ]
-        duration_result = subprocess.run(duration_cmd, capture_output=True, text=True)
-        
-        total_duration = None
-        for line in duration_result.stderr.split('\n'):
-            if 'Duration:' in line:
-                try:
-                    duration_str = line.split('Duration: ')[1].split(',')[0]
-                    h, m, s = duration_str.split(':')
-                    total_duration = float(h) * 3600 + float(m) * 60 + float(s)
-                    break
-                except (IndexError, ValueError):
-                    continue
-        
+        total_duration = get_audio_duration(audio_path)
+
         if total_duration is None:
             logging.warning("Could not determine audio duration")
             return None
@@ -328,12 +356,178 @@ def get_audio_files(input_path):
     
     # Sort by filename for consistent ordering
     audio_files.sort(key=lambda x: x.title.lower())
-    
-    # Store converted files list for cleanup
+
+    # Store converted files list for cleanup. Done before the duration check so that
+    # anything it writes is registered even if it aborts (same list object, so appending
+    # to converted_files below still updates the global).
     global _converted_files
     _converted_files = converted_files
+
+    # Truncate a single over-long file, or warn when a set exceeds the Tonie limit
+    enforce_max_duration(audio_files, converted_files)
     
     return audio_files
+
+def cap_audio_file(audio_file, max_seconds, temp_files):
+    """Write a copy of audio_file that plays for no more than max_seconds.
+
+    Returns the path to the truncated copy, or None if it could not be produced. The
+    copy always goes to a temp directory so it never lands back in the input directory,
+    where a later scan would pick it up as an extra file. Its path is appended to
+    temp_files as soon as ffmpeg is asked to write it, so even a failed or over-length
+    attempt gets cleaned up.
+
+    Stream copying can only cut on a frame boundary, so ffmpeg rounds up and a plain
+    `-t max_seconds` lands slightly *over* the limit - enough for the Tonie service to
+    reject it. We aim a safety margin below the limit, then measure the result and
+    widen the margin until it actually fits.
+    """
+    source = Path(audio_file.filepath)
+
+    # Reuse the temp directory a converted file already lives in, otherwise make one
+    source_dir = str(source.parent)
+    if source_dir.startswith(tempfile.gettempdir()):
+        output_dir = Path(source_dir)
+    else:
+        output_dir = Path(tempfile.mkdtemp(prefix="tonie_capped_"))
+
+    capped_path = output_dir / f"{source.stem}_capped{source.suffix}"
+    counter = 1
+    while capped_path.exists():
+        capped_path = output_dir / f"{source.stem}_capped_{counter}{source.suffix}"
+        counter += 1
+
+    margin = CAP_SAFETY_MARGIN
+
+    for attempt in range(1, CAP_MAX_ATTEMPTS + 1):
+        target = max_seconds - margin
+
+        if target <= 0:
+            logging.error(f"Cannot truncate {source.name}: the {max_seconds:g} second "
+                          f"limit is shorter than the safety margin")
+            return None
+
+        cmd = [
+            args.ffmpeg_path,
+            "-i", str(source),
+            "-t", str(target),  # Keep only the first `target` seconds
+            "-acodec", "copy",  # Copy audio codec to avoid re-encoding
+            "-y",
+            str(capped_path)
+        ]
+
+        if str(capped_path) not in temp_files:
+            temp_files.append(str(capped_path))
+
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to truncate {source.name}: {e}")
+            logging.error(f"ffmpeg stderr: {e.stderr}")
+            return None
+
+        # Measure what we actually got - the frame boundary decides, not our target
+        actual = get_audio_duration(capped_path)
+
+        if actual is None:
+            logging.warning(f"Could not measure the truncated copy of {source.name} - "
+                            f"assuming it is within the limit")
+            return str(capped_path)
+
+        if actual <= max_seconds:
+            logging.debug(f"Truncated to {actual:.2f}s (target {target:.2f}s, "
+                          f"limit {max_seconds:.2f}s) on attempt {attempt}")
+            return str(capped_path)
+
+        # Still over: the frame boundary rounded past the limit, so aim further under.
+        # The +1 guarantees the margin grows even from zero.
+        logging.debug(f"Truncated copy came out at {actual:.2f}s, still over the "
+                      f"{max_seconds:.2f}s limit - widening the margin")
+        margin = margin * 4 + 1.0
+
+    logging.error(f"Could not truncate {source.name} to within {max_seconds:g} seconds "
+                  f"after {CAP_MAX_ATTEMPTS} attempts")
+    return None
+
+def enforce_max_duration(audio_files, temp_files):
+    """Enforce the Creative Tonie duration limit.
+
+    A single file longer than the limit is replaced with a truncated copy. A set of
+    several files is never truncated - the total is only reported as a warning, since
+    picking which file to cut is the user's call.
+
+    Records each file's duration on the AudioTitle and appends any temporary file it
+    creates to temp_files, for cleanup.
+
+    Raises RuntimeError if a single file needs truncating but cannot be truncated. The
+    Tonie service enforces the limit strictly, and update_tonie clears a Tonie's existing
+    chapters before uploading - so proceeding with an over-length file would wipe the
+    Tonie's content and then fail. Better to stop before anything is touched.
+    """
+    if args.no_duration_limit:
+        logging.debug("Duration limit checking is disabled")
+        return
+
+    max_seconds = args.max_duration * 60
+
+    if not check_ffmpeg():
+        logging.warning(f"ffmpeg not found at '{args.ffmpeg_path}' - skipping the "
+                        f"{args.max_duration:g} minute duration check")
+        return
+
+    for audio_file in audio_files:
+        audio_file.duration = get_audio_duration(audio_file.filepath)
+        if audio_file.duration is None:
+            logging.warning(f"Could not determine the duration of "
+                            f"{os.path.basename(audio_file.filepath)} - it is excluded "
+                            f"from the duration check")
+
+    # Single file over the limit: truncate a copy of it
+    if len(audio_files) == 1:
+        audio_file = audio_files[0]
+
+        if audio_file.duration is None or audio_file.duration <= max_seconds:
+            return
+
+        logging.info(f"'{audio_file.title}' runs {format_duration(audio_file.duration)}, "
+                     f"over the {args.max_duration:g} minute limit - truncating to "
+                     f"{format_duration(max_seconds)}")
+
+        capped_path = cap_audio_file(audio_file, max_seconds, temp_files)
+
+        if capped_path is None:
+            raise RuntimeError(
+                f"'{audio_file.title}' runs {format_duration(audio_file.duration)} and "
+                f"could not be truncated to the {args.max_duration:g} minute limit. "
+                f"Stopping before any Creative Tonie is modified - uploading it would "
+                f"clear the Tonie's chapters and then be rejected. Shorten the file "
+                f"yourself, or pass --no-duration-limit to upload it unchanged."
+            )
+
+        audio_file.filepath = capped_path
+        audio_file.duration = get_audio_duration(capped_path)
+        audio_file.is_capped = True
+
+        measured = (f" - runs {format_duration(audio_file.duration)}"
+                    if audio_file.duration is not None else "")
+        logging.info(f"Truncated copy written to {capped_path}{measured} "
+                     f"(original left untouched)")
+        return
+
+    # Several files over the limit: warn only, never truncate
+    known_durations = [af.duration for af in audio_files if af.duration is not None]
+    if known_durations:
+        total = sum(known_durations)
+        if total > max_seconds:
+            over = total - max_seconds
+            logging.warning("=" * 70)
+            logging.warning(f"{len(audio_files)} files total {format_duration(total)}, which is "
+                            f"{format_duration(over)} over the {args.max_duration:g} minute "
+                            f"Creative Tonie limit")
+            logging.warning("Sets of several files are never truncated - remove or shorten "
+                            "files yourself. Uploading as is will clear the Tonie's "
+                            "existing chapters and then be rejected.")
+            logging.warning("=" * 70)
 
 def cleanup_converted_files():
     """Clean up temporary converted files"""
@@ -347,11 +541,12 @@ def cleanup_converted_files():
             except Exception as e:
                 logging.warning(f"Failed to clean up {file_path}: {e}")
         
-        # Clean up temp directory if empty
-        if _converted_files:
-            temp_dir = os.path.dirname(_converted_files[0])
+        # Clean up any temp directories we created that are now empty
+        # (truncated copies can live in a different directory than converted files)
+        for temp_dir in {os.path.dirname(path) for path in _converted_files}:
             try:
-                if temp_dir.startswith(tempfile.gettempdir()) and not os.listdir(temp_dir):
+                if (temp_dir.startswith(tempfile.gettempdir())
+                        and os.path.isdir(temp_dir) and not os.listdir(temp_dir)):
                     os.rmdir(temp_dir)
                     logging.debug(f"Cleaned up temp directory: {temp_dir}")
             except Exception as e:
@@ -532,12 +727,35 @@ def confirm_selection(selected_tonies, tonie_households, audio_files, dry_run=Fa
     action = "DRY RUN - Preview changes for" if dry_run else "Update"
     converted_count = sum(1 for af in audio_files if af.is_converted)
     
+    capped_count = sum(1 for af in audio_files if af.is_capped)
+
     print(f"{action} the following Creative Tonies with {len(audio_files)} audio files")
     if converted_count > 0:
         print(f"({converted_count} converted from video):")
     else:
         print(":")
+    if capped_count > 0:
+        print(f"({capped_count} truncated to the {args.max_duration:g} minute limit)")
     print()
+
+    known_durations = [af.duration for af in audio_files if af.duration is not None]
+    if known_durations:
+        total = sum(known_durations)
+        if len(known_durations) == len(audio_files):
+            print(f"Total runtime: {format_duration(total)}")
+        else:
+            print(f"Total runtime: {format_duration(total)} "
+                  f"({len(known_durations)} of {len(audio_files)} files measured)")
+
+        if not args.no_duration_limit and total > args.max_duration * 60:
+            over = total - args.max_duration * 60
+            print()
+            print("!" * 70)
+            print(f"WARNING: total runtime is {format_duration(over)} over the "
+                  f"{args.max_duration:g} minute Creative Tonie limit.")
+            print("         The upload will likely fail. Remove or shorten files first.")
+            print("!" * 70)
+        print()
     
     for i, tonie in enumerate(selected_tonies, 1):
         chapter_count = len(tonie.chapters) if hasattr(tonie, 'chapters') and tonie.chapters else 0
@@ -561,6 +779,15 @@ def confirm_selection(selected_tonies, tonie_households, audio_files, dry_run=Fa
             cleanup_converted_files()
             sys.exit(0)
 
+def describe_audio_file(audio_file):
+    """Build the parenthetical status shown next to a file while uploading"""
+    notes = []
+    if audio_file.is_converted:
+        notes.append("converted from video")
+    if audio_file.is_capped:
+        notes.append(f"truncated to {args.max_duration:g} min")
+    return f" ({', '.join(notes)})" if notes else ""
+
 def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False):
     """Update a single Creative Tonie with audio files"""
     household = tonie_households.get(tonie.id, 'Unknown')
@@ -573,7 +800,7 @@ def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False)
         
         # Upload new files
         for i, audio_file in enumerate(audio_files, 1):
-            status = " (converted from video)" if audio_file.is_converted else ""
+            status = describe_audio_file(audio_file)
             logging.info(f"Uploading ({i}/{len(audio_files)}): {audio_file.title}{status}")
             tonie_api.upload_file_to_tonie(tonie, audio_file.filepath, audio_file.title)
         
@@ -592,7 +819,7 @@ def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False)
             logging.warning(f"Could not refresh tonie data after upload: {e}")
     else:
         for i, audio_file in enumerate(audio_files, 1):
-            status = " (converted from video)" if audio_file.is_converted else ""
+            status = describe_audio_file(audio_file)
             logging.info(f"[DRY RUN] Would upload ({i}/{len(audio_files)}): {audio_file.title}{status}")
     
     logging.info(f"{'[DRY RUN] ' if dry_run else ''}Successfully updated '{tonie.name}'")
@@ -625,6 +852,10 @@ def main():
                 print("  (Video conversion was automatically enabled)")
         elif args.convert_video:
             print("  (Video conversion was manually enabled but no video files were found)")
+
+        capped_count = sum(1 for af in audio_files if af.is_capped)
+        if capped_count > 0:
+            print(f"  - {capped_count} truncated to the {args.max_duration:g} minute limit")
         
         # Get all Creative Tonies
         print("Fetching Creative Tonies...")
