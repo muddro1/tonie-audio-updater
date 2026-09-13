@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- A native macOS GUI (`python -m gui`, or a built `Tonie Audio Updater.app`): pick
+  files, folders, or links; tick the Creative Tonies to update; watch progress and a
+  final summary. Credentials are kept in the macOS Keychain. Each Tonie is shown with
+  its own picture and its current chapters, expandable in place. A banner names any
+  missing external tool (FFmpeg, yt-dlp) and gives its install command, rather than
+  failing partway through a run.
+- `./build/build_app.sh` and `build/tonie_gui.spec` bundle the GUI into an unsigned
+  `build/dist/Tonie Audio Updater.app` with PyInstaller.
+- `-i` accepts more than one path in the same run - several files, several
+  directories, or a mix, not just one directory.
+- `-i` accepts individual files as well as directories.
+- `-i` accepts links, downloading them with `yt-dlp` - a single video or a whole
+  playlist, each entry becoming a chapter.
+- `--ytdlp-path` sets the yt-dlp executable to use for links (default: yt-dlp),
+  mirroring `--ffmpeg-path`.
+
+### Changed
+- `update_tonie` accepts an optional `should_cancel` keyword, polled between files so
+  a caller - the GUI - can stop an upload in progress. The CLI's behavior is
+  unchanged when it is not passed.
+
 ## [4.0] - 2026-09-13
 
 ### Security

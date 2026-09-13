@@ -8,3 +8,6 @@ pytest
 # Tests that exercise duration measurement and truncation need FFmpeg on PATH.
 # They are skipped automatically when it is missing.
 pytest-qt
+
+# Bundles the GUI into build/dist/Tonie Audio Updater.app - see build/build_app.sh
+pyinstaller

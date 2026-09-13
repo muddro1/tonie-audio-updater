@@ -20,6 +20,7 @@ A Python script to easily upload audio files to Creative Tonies. Supports multip
 
 - Python 3.6 or higher
 - FFmpeg (for video conversion and silence trimming)
+- yt-dlp (for links and playlists, see [All Options](#all-options))
 - Tonie account with Creative Tonies
 
 ## Installation
@@ -81,6 +82,37 @@ python tony.py -i /path/to/audio/files
 Both can still be passed as `-u` and `-p`, but see [Credentials](#credentials)
 before putting a password on the command line.
 
+### Several Sources at Once
+
+`-i` takes more than one path, and accepts individual files as well as directories:
+
+```bash
+# Two folders and a loose file in one run
+python tony.py -i ~/Music/Kids ~/Downloads/Story.mp3 ~/Videos/Bedtime
+
+# A single audio or video file
+python tony.py -i ~/Downloads/Bedtime-Story.m4a
+```
+
+### Links and Playlists
+
+A link is downloaded with `yt-dlp`, which must be installed separately (`brew install
+yt-dlp`, or see [yt-dlp's own instructions](https://github.com/yt-dlp/yt-dlp)) - it is
+detected, not bundled, the same way FFmpeg is:
+
+```bash
+# A single video
+python tony.py -i "https://www.youtube.com/watch?v=XXXXXXXXXXX"
+
+# A playlist - every video in it is downloaded as a chapter
+python tony.py -i "https://www.youtube.com/playlist?list=XXXXXXXXXXXXXXXXXXXX"
+
+# Links mixed with local files and folders in the same run
+python tony.py -i ~/Music/Kids "https://www.youtube.com/watch?v=XXXXXXXXXXX"
+```
+
+Point `--ytdlp-path` at the executable if it is not on `PATH`.
+
 ### Common Options
 
 ```bash
@@ -118,13 +150,14 @@ python tony.py -i /path/to/files --no-duration-limit
 |--------|-------------|
 | `-u, --username` | Tonie account username (default: `$TONIE_USERNAME`, otherwise prompted for) |
 | `-p, --password` | Tonie account password. Exposes it in `ps` output and shell history — prefer `$TONIE_PASSWORD` |
-| `-i, --input-path` | Path to directory containing audio/video files (required) |
+| `-i, --input-path` | One or more files or directories containing audio/video, and/or links to a video or a playlist (required). Repeat the flag or list several after it |
 | `--dry-run` | Show what would be done without actually updating |
 | `--non-interactive` | Run without the selection menu. Needs `--tonie` unless the account holds exactly one Creative Tonie |
 | `--tonie` | Name of the Creative Tonie to update, for non-interactive runs (case-insensitive) |
 | `--force-update` | Force update even if Tonie appears up to date |
 | `--convert-video` | Convert video files (MKV, MP4, AVI, MOV, WMV, FLV) to MP3 audio |
 | `--ffmpeg-path` | Path to ffmpeg executable (default: ffmpeg) |
+| `--ytdlp-path` | Path to the yt-dlp executable, used to resolve and download links (default: yt-dlp) |
 | `--audio-bitrate` | Audio bitrate for video conversion (default: 128k) |
 | `--keep-converted` | Keep converted audio files after upload |
 | `--trim-silence` | Trim silence at the end of converted audio files |
@@ -134,6 +167,49 @@ python tony.py -i /path/to/files --no-duration-limit
 | `--no-duration-limit` | Skip the duration limit check entirely (no truncation, no warning) |
 | `--upload-retries` | Attempts per file before giving up on an upload (default: 3) |
 | `--retry-delay` | Seconds between upload attempts, doubling each time (default: 2.0) |
+
+## macOS App
+
+A native macOS GUI wraps the same engine as the `tony.py` command line: pick files,
+folders, or links (drag and drop works too); tick the Creative Tonies to update; watch
+the log; done. It stores credentials in the macOS Keychain rather than the
+environment, shows each Tonie's own picture with its current chapters (expand a row to
+see them), and shows a banner instead of a traceback when FFmpeg or yt-dlp is missing.
+
+### Running It
+
+**From source**, no build needed:
+
+```bash
+pip install -r requirements.txt -r requirements-gui.txt
+python -m gui
+```
+
+**As a built app**, unsigned:
+
+```bash
+pip install -r requirements.txt -r requirements-gui.txt -r requirements-dev.txt
+./build/build_app.sh
+```
+
+This produces `build/dist/Tonie Audio Updater.app`. It is not code-signed or notarized,
+so the first time you open it, macOS Gatekeeper refuses a double click. Right-click
+the app, choose **Open**, then **Open** again on the dialog that follows - this
+override is required only once, and macOS remembers the choice from then on.
+
+### What It Does and Does Not Bundle
+
+FFmpeg and yt-dlp are detected on `PATH` (or at the path given in Advanced options)
+rather than bundled into the app. If either is missing, a banner names which one and
+gives you the install command to copy; uploading plain audio files still works with
+neither installed, since only video conversion and links need them.
+
+### Sign-In
+
+Credentials are asked for once and, if you choose to remember them, kept in the macOS
+Keychain rather than in a file or an environment variable - the same prompt macOS
+itself uses for network passwords. Quitting and reopening the app does not ask again
+until you sign out.
 
 ## Silence Trimming Feature
 
