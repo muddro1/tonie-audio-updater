@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- The password is no longer required on the command line, where it was visible to any
+  user running `ps` and written to shell history. `-u` and `-p` are now optional and
+  fall back to `$TONIE_USERNAME` and `$TONIE_PASSWORD`, then to a prompt that reads the
+  password without echoing it.
+
+### Added
+- `--tonie NAME` selects the Creative Tonie to update in non-interactive runs
+- `--upload-retries` (default 3) and `--retry-delay` (default 2.0s, doubling) retry a
+  file whose upload fails
+- A test suite: `pip install -r requirements-dev.txt && pytest`. Tests that measure or
+  truncate audio run a real FFmpeg and skip when it is missing.
+
+### Fixed
+- Audio and video files are found whatever the case of their extension. `glob` patterns
+  match case-sensitively even on a case-insensitive filesystem, so a directory of `.MP3`
+  or `.MOV` files - the usual shape off a ripper or a camera - reported "No audio files
+  found".
+- The chapter titles on a Tonie are logged before they are cleared, and a failed upload
+  reports how many files made it and which chapters were lost. Clearing before uploading
+  cannot be avoided, since the 90 minute cap counts a Tonie's total content.
+- Reordered chapters are detected as needing an update. Titles were compared as sorted
+  lists, so the same files in a different order read as up to date, despite chapter order
+  being playback order.
+- A mismatch is described with the titles as written rather than lowercased for
+  comparison, and counts a title appearing a different number of times.
+- Both prompts exit cleanly at end of input instead of raising `EOFError`, so piping
+  input no longer ends in a traceback.
+- `--min-silence-duration` is parsed as a number, so a typo fails at parse time rather
+  than deep inside silence detection.
+- `AudioTitle` is hashable again. Defining `__eq__` without `__hash__` set `__hash__` to
+  `None`, which would have raised on any attempt to put one in a set.
+
+### Changed
+- **Breaking**: `--non-interactive` no longer updates whichever Creative Tonie the API
+  listed first. It requires `--tonie NAME` unless the account holds exactly one, and
+  treats a name shared by two households as an error. Updating clears the Tonie it
+  picks, so guessing was not safe.
+- Arguments are parsed in `main()` rather than at import, and `tonie_api` is imported
+  there too, so the module can be imported - and tested - without argv or the dependency
+  installed.
+- Documented WMV and FLV in the video formats the `--convert-video` option accepts; both
+  were already supported.
+- Dropped four unused imports: `json`, `Config`, `CreativeTonie`, `User`.
+
 ## [3.1] - 2026-09-12
 
 ### Added

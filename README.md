@@ -5,7 +5,7 @@ A Python script to easily upload audio files to Creative Tonies. Supports multip
 ## Features
 
 - 🎵 **Multiple Audio Formats**: Supports MP3, WAV, M4A, and OGG files
-- 🎬 **Video Conversion**: Automatically converts MKV, MP4, AVI, MOV files to MP3 using FFmpeg
+- 🎬 **Video Conversion**: Automatically converts MKV, MP4, AVI, MOV, WMV, and FLV files to MP3 using FFmpeg
 - ✂️ **Silence Trimming**: Intelligently removes trailing silence from converted audio files
 - ⏱️ **90-Minute Limit**: Truncates a single over-long file to the 90 minute Creative Tonie limit, and warns when a set of files exceeds it
 - 🏠 **Multi-Household Support**: Works with Creative Tonies across multiple households
@@ -13,6 +13,8 @@ A Python script to easily upload audio files to Creative Tonies. Supports multip
 - 📋 **Interactive Menu**: Easy-to-use interface for selecting which Tonies to update
 - 🔍 **Dry Run Mode**: Preview changes before making them
 - 🧹 **Automatic Cleanup**: Removes temporary converted files after upload
+- 🔑 **Credentials Kept Off the Command Line**: Reads `$TONIE_USERNAME` and `$TONIE_PASSWORD`, or prompts without echoing
+- 🔁 **Upload Retries**: Retries a file that fails on a dropped connection, and records what was on the Tonie first
 
 ## Requirements
 
@@ -64,51 +66,64 @@ A Python script to easily upload audio files to Creative Tonies. Supports multip
 ### Basic Usage
 
 ```bash
-python tony.py -u your_username -p your_password -i /path/to/audio/files
+python tony.py -i /path/to/audio/files
 ```
+
+You will be prompted for your username and password. To avoid the prompt, export
+them first:
+
+```bash
+export TONIE_USERNAME=you@example.com
+export TONIE_PASSWORD='your-password'
+python tony.py -i /path/to/audio/files
+```
+
+Both can still be passed as `-u` and `-p`, but see [Credentials](#credentials)
+before putting a password on the command line.
 
 ### Common Options
 
 ```bash
 # Dry run (preview changes without uploading)
-python tony.py -u username -p password -i /path/to/files --dry-run
+python tony.py -i /path/to/files --dry-run
 
 # Convert video files to audio
-python tony.py -u username -p password -i /path/to/files --convert-video
+python tony.py -i /path/to/files --convert-video
 
 # Convert video files and trim trailing silence
-python tony.py -u username -p password -i /path/to/files --convert-video --trim-silence
+python tony.py -i /path/to/files --convert-video --trim-silence
 
-# Non-interactive mode (updates first Tonie automatically)
-python tony.py -u username -p password -i /path/to/files --non-interactive
+# Non-interactive mode (no menu; names the Tonie to update)
+python tony.py -i /path/to/files --non-interactive --tonie "Elephant"
 
 # Force update even if Tonie seems up to date
-python tony.py -u username -p password -i /path/to/files --force-update
+python tony.py -i /path/to/files --force-update
 
 # Keep converted audio files instead of deleting them
-python tony.py -u username -p password -i /path/to/files --convert-video --keep-converted
+python tony.py -i /path/to/files --convert-video --keep-converted
 
 # Custom silence detection settings
-python tony.py -u username -p password -i /path/to/files --convert-video --trim-silence --silence-threshold -40dB --min-silence-duration 3.0
+python tony.py -i /path/to/files --convert-video --trim-silence --silence-threshold -40dB --min-silence-duration 3.0
 
 # Raise or lower the duration limit (default: 90 minutes)
-python tony.py -u username -p password -i /path/to/files --max-duration 60
+python tony.py -i /path/to/files --max-duration 60
 
 # Upload a long file untouched, without the duration check
-python tony.py -u username -p password -i /path/to/files --no-duration-limit
+python tony.py -i /path/to/files --no-duration-limit
 ```
 
 ### All Options
 
 | Option | Description |
 |--------|-------------|
-| `-u, --username` | Tonie account username (required) |
-| `-p, --password` | Tonie account password (required) |
+| `-u, --username` | Tonie account username (default: `$TONIE_USERNAME`, otherwise prompted for) |
+| `-p, --password` | Tonie account password. Exposes it in `ps` output and shell history — prefer `$TONIE_PASSWORD` |
 | `-i, --input-path` | Path to directory containing audio/video files (required) |
 | `--dry-run` | Show what would be done without actually updating |
-| `--non-interactive` | Run in non-interactive mode (updates first Tonie) |
+| `--non-interactive` | Run without the selection menu. Needs `--tonie` unless the account holds exactly one Creative Tonie |
+| `--tonie` | Name of the Creative Tonie to update, for non-interactive runs (case-insensitive) |
 | `--force-update` | Force update even if Tonie appears up to date |
-| `--convert-video` | Convert video files (MKV, MP4, AVI, MOV) to MP3 audio |
+| `--convert-video` | Convert video files (MKV, MP4, AVI, MOV, WMV, FLV) to MP3 audio |
 | `--ffmpeg-path` | Path to ffmpeg executable (default: ffmpeg) |
 | `--audio-bitrate` | Audio bitrate for video conversion (default: 128k) |
 | `--keep-converted` | Keep converted audio files after upload |
@@ -117,6 +132,8 @@ python tony.py -u username -p password -i /path/to/files --no-duration-limit
 | `--min-silence-duration` | Minimum silence duration to trigger trimming in seconds (default: 2.0) |
 | `--max-duration` | Maximum minutes a Creative Tonie accepts; a single longer file is truncated to this length (default: 90) |
 | `--no-duration-limit` | Skip the duration limit check entirely (no truncation, no warning) |
+| `--upload-retries` | Attempts per file before giving up on an upload (default: 3) |
+| `--retry-delay` | Seconds between upload attempts, doubling each time (default: 2.0) |
 
 ## Silence Trimming Feature
 
@@ -143,16 +160,16 @@ The silence trimming feature automatically detects and removes long periods of s
 
 ```bash
 # Basic silence trimming with default settings
-python tony.py -u username -p password -i /path/to/videos --convert-video --trim-silence
+python tony.py -i /path/to/videos --convert-video --trim-silence
 
 # More aggressive silence detection (quieter threshold)
-python tony.py -u username -p password -i /path/to/videos --convert-video --trim-silence --silence-threshold -60dB
+python tony.py -i /path/to/videos --convert-video --trim-silence --silence-threshold -60dB
 
 # Only trim very long silence periods
-python tony.py -u username -p password -i /path/to/videos --convert-video --trim-silence --min-silence-duration 5.0
+python tony.py -i /path/to/videos --convert-video --trim-silence --min-silence-duration 5.0
 
 # Custom settings for both threshold and duration
-python tony.py -u username -p password -i /path/to/videos --convert-video --trim-silence --silence-threshold -45dB --min-silence-duration 1.5
+python tony.py -i /path/to/videos --convert-video --trim-silence --silence-threshold -45dB --min-silence-duration 1.5
 ```
 
 ## Duration Limit
@@ -194,13 +211,13 @@ is deleted after the upload (unless you pass `--keep-converted`).
 
 ```bash
 # Default: a single file longer than 90 minutes is truncated to 90 minutes
-python tony.py -u username -p password -i /path/to/files
+python tony.py -i /path/to/files
 
 # Truncate to 60 minutes instead
-python tony.py -u username -p password -i /path/to/files --max-duration 60
+python tony.py -i /path/to/files --max-duration 60
 
 # Turn the check off completely
-python tony.py -u username -p password -i /path/to/files --no-duration-limit
+python tony.py -i /path/to/files --no-duration-limit
 ```
 
 > **Note**: The duration check needs FFmpeg. If FFmpeg isn't installed and you're
@@ -218,6 +235,9 @@ python tony.py -u username -p password -i /path/to/files --no-duration-limit
 7. **Cleans up** any temporary files created during the process
 
 ## Supported File Formats
+
+Extension case is ignored, so `.MP3` and `.MOV` work as well as `.mp3` and `.mov`.
+Only the input directory itself is scanned — subdirectories are not searched.
 
 ### Audio Files (Direct Upload)
 - MP3
@@ -247,22 +267,22 @@ The script provides an easy-to-use menu system:
 
 ### Upload audio files from a folder
 ```bash
-python tony.py -u myemail@example.com -p mypassword -i ~/Music/Kids
+python tony.py -i ~/Music/Kids
 ```
 
 ### Convert video files and upload with silence trimming
 ```bash
-python tony.py -u myemail@example.com -p mypassword -i ~/Videos/Stories --convert-video --trim-silence
+python tony.py -i ~/Videos/Stories --convert-video --trim-silence
 ```
 
 ### Preview what would be updated
 ```bash
-python tony.py -u myemail@example.com -p mypassword -i ~/Audio --dry-run
+python tony.py -i ~/Audio --dry-run
 ```
 
 ### Advanced video conversion with custom settings
 ```bash
-python tony.py -u myemail@example.com -p mypassword -i ~/Videos --convert-video --trim-silence --silence-threshold -45dB --min-silence-duration 3.0 --audio-bitrate 192k --keep-converted
+python tony.py -i ~/Videos --convert-video --trim-silence --silence-threshold -45dB --min-silence-duration 3.0 --audio-bitrate 192k --keep-converted
 ```
 
 ## Troubleshooting
@@ -271,6 +291,9 @@ python tony.py -u myemail@example.com -p mypassword -i ~/Videos --convert-video 
 - Check that your directory contains supported audio formats
 - If you have video files, use `--convert-video` option
 - Make sure the path is correct
+- Only the directory itself is scanned; files in subdirectories are not picked up
+- Extension case does not matter — `Story.MP3` and `Clip.MOV` are found just like
+  their lowercase forms
 
 ### "ffmpeg not found"
 - Install FFmpeg on your system
@@ -292,6 +315,14 @@ python tony.py -u myemail@example.com -p mypassword -i ~/Videos --convert-video 
 - Ensure audio files are not corrupted
 - Check file permissions
 - Try with smaller files first
+- Each file is retried automatically; raise `--upload-retries` on a flaky connection
+- A file over 90 minutes is truncated rather than rejected — see [Duration Limit](#duration-limit)
+- If an upload fails partway, the log lists the chapter titles that were cleared, so
+  you know what to put back
+
+### "--non-interactive needs --tonie NAME"
+- The account holds more than one Creative Tonie, and updating clears the one it picks,
+  so the script will not guess. Pass `--tonie "Name"`; the error lists the names found.
 
 ## Performance Tips
 
@@ -300,11 +331,65 @@ python tony.py -u myemail@example.com -p mypassword -i ~/Videos --convert-video 
 - Higher `--audio-bitrate` values create better quality but larger files
 - The `--dry-run` option lets you test settings without uploading
 
-## Security Notes
+## Credentials
 
-- The script requires your Tonie account credentials as command-line arguments
-- Credentials are not stored or logged by the script
-- Consider using environment variables for credentials in automated setups
+The script needs your Tonie account username and password. It looks for them in this
+order:
+
+1. `-u` and `-p` on the command line
+2. `$TONIE_USERNAME` and `$TONIE_PASSWORD`
+3. An interactive prompt — the password is read without echoing
+
+**Avoid `-p`.** Anything on a command line is visible to every user on the machine
+through `ps`, and your shell writes it to history. For a scheduled or scripted run,
+put the password in the environment instead:
+
+```bash
+export TONIE_PASSWORD='your-password'
+python tony.py -i /path/to/files --non-interactive --tonie "Elephant"
+```
+
+Credentials are never stored or logged by the script.
+
+## Non-Interactive Runs
+
+`--non-interactive` skips the selection menu, for cron jobs and scripts.
+
+Because updating a Tonie **clears its existing chapters first**, this mode never
+guesses which Tonie you meant. Pass `--tonie NAME` (matched case-insensitively). The
+name is only optional when the account holds exactly one Creative Tonie; otherwise the
+script stops and lists the names it found. A name that two households both use is an
+error rather than a coin flip.
+
+```bash
+python tony.py -i /path/to/files --non-interactive --tonie "Elephant"
+```
+
+## If an Upload Fails
+
+A Tonie's chapters are cleared before the new files go up. That order is forced: the
+90 minute cap counts a Tonie's *total* content, so new audio cannot be added alongside
+the old and swapped afterwards.
+
+So that a dropped connection does not cost you the Tonie's contents:
+
+- The titles already on the Tonie are logged **before** they are cleared, giving you a
+  record of what was there
+- Each file is retried `--upload-retries` times (default 3), waiting `--retry-delay`
+  seconds and doubling between attempts
+- If a file still fails, the script reports how many made it and which chapters were
+  cleared, then stops rather than continuing
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests that measure or truncate audio run a real FFmpeg rather than a mock, since what
+they check is where FFmpeg lands on a frame boundary. They skip automatically when
+FFmpeg is not installed.
 
 ## Contributing
 
