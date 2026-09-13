@@ -12,11 +12,21 @@ SERVICE = "tonie-audio-updater"
 
 def store_password(username, password, service=SERVICE):
     """Write the password, replacing any existing entry for this account."""
-    subprocess.run(
-        ["security", "add-generic-password",
-         "-a", username, "-s", service, "-w", password, "-U"],
-        capture_output=True, check=True,
-    )
+    try:
+        subprocess.run(
+            ["security", "add-generic-password",
+             "-a", username, "-s", service, "-w", password, "-U"],
+            capture_output=True, check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        # Do not let the original exception propagate: its str() embeds the full argv,
+        # including the plaintext password passed via -w. Re-raise something that
+        # carries the failure's exit code and stderr (which does not echo the
+        # password) but never the argv or the password itself.
+        stderr = e.stderr.decode(errors="replace").strip() if e.stderr else ""
+        raise RuntimeError(
+            f"security add-generic-password failed (exit {e.returncode}): {stderr}"
+        ) from None
 
 
 def load_password(username, service=SERVICE):
