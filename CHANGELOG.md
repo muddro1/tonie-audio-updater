@@ -60,11 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2025-06-24
 
 ### Added
-- `tony.py`, the Python implementation of the uploader
+- `tony.py`, the uploader itself. Every feature listed under 1.0.0 below was
+  documented by that release but only became usable here, since the script was
+  missing from the 1.0.0 tree.
 
 ### Removed
-- `tony.sh`, the shell wrapper it replaces, which called a script that was not
-  part of the repository and passed options the uploader does not accept
+- `tony.sh`, a leftover wrapper that invoked a `/tony.py` outside the repository
+  and passed options the uploader does not accept (`--playlist`,
+  `--pushover-userkey`, `--pushover-apptoken`, `--cache-path`)
 
 ## [1.0.1] - 2025-06-24
 
@@ -72,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This changelog
 
 ## [1.0.0] - 2025-06-23
+
+> **Note**: This release documented the features below and described how to install
+> and run the tool, but `tony.py` itself was not committed - the tagged tree contained
+> only the README, `requirements.txt`, `LICENSE`, `.gitignore`, and an unrelated
+> `tony.sh` wrapper. The script arrived in 2.0.0. Treat the list below as the feature
+> set this release specified rather than shipped.
 
 ### Added
 - **Core Functionality**
