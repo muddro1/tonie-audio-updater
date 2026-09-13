@@ -1,0 +1,9 @@
+# Development dependencies
+#
+# Install with: pip install -r requirements-dev.txt
+# Run the tests with: pytest
+
+pytest
+
+# Tests that exercise duration measurement and truncation need FFmpeg on PATH.
+# They are skipped automatically when it is missing.
