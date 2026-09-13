@@ -517,3 +517,56 @@ def test_a_dry_run_neither_clears_nor_uploads(configure):
                       [tony.AudioTitle("/a.mp3", "New")], dry_run=True)
 
     assert api.calls == []
+
+
+# --- selecting a tonie without the menu -----------------------------------
+
+def test_select_tonie_by_exact_name(configure):
+    configure("--tonie", "Elephant")
+    tonies = [FakeTonie("Lion"), FakeTonie("Elephant")]
+
+    assert tony.select_tonies_by_name(tonies, {}) == [tonies[1]]
+
+
+def test_selecting_by_name_ignores_case_and_padding(configure):
+    configure("--tonie", "  eLePhAnT ")
+    tonies = [FakeTonie("Lion"), FakeTonie("Elephant")]
+
+    assert tony.select_tonies_by_name(tonies, {}) == [tonies[1]]
+
+
+def test_an_unknown_name_is_an_error_listing_what_exists(configure):
+    configure("--tonie", "Giraffe")
+    tonies = [FakeTonie("Lion"), FakeTonie("Elephant")]
+
+    with pytest.raises(ValueError) as excinfo:
+        tony.select_tonies_by_name(tonies, {})
+
+    assert "Giraffe" in str(excinfo.value)
+    assert "Lion" in str(excinfo.value)
+    assert "Elephant" in str(excinfo.value)
+
+
+def test_an_ambiguous_name_is_an_error(configure):
+    """Two households can hold Tonies with the same name - picking one would be a guess."""
+    configure("--tonie", "Elephant")
+    a, b = FakeTonie("Elephant"), FakeTonie("Elephant")
+    b.id = "t2"
+
+    with pytest.raises(ValueError, match="[Aa]mbiguous|more than one"):
+        tony.select_tonies_by_name([a, b], {"t1": "Upstairs", "t2": "Downstairs"})
+
+
+def test_non_interactive_without_a_name_is_an_error(configure):
+    """Defaulting to the first Tonie the API happens to return clears a random Tonie."""
+    configure("--non-interactive")
+
+    with pytest.raises(ValueError, match="--tonie"):
+        tony.select_tonies_by_name([FakeTonie("Lion"), FakeTonie("Elephant")], {})
+
+
+def test_non_interactive_with_one_tonie_needs_no_name(configure):
+    configure("--non-interactive")
+    only = FakeTonie("Lion")
+
+    assert tony.select_tonies_by_name([only], {}) == [only]

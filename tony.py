@@ -51,7 +51,11 @@ Usage: {os.path.basename(__file__)} [options]
     parser.add_argument("--dry-run", dest="dry_run", action="store_true",
                         help="Show what would be done without actually updating")
     parser.add_argument("--non-interactive", dest="non_interactive", action="store_true",
-                        help="Run in non-interactive mode (updates first tonie)")
+                        help="Run without the selection menu. Needs --tonie unless the "
+                             "account holds exactly one Creative Tonie")
+    parser.add_argument("--tonie", dest="tonie_name",
+                        help="Name of the Creative Tonie to update, for non-interactive "
+                             "runs (case-insensitive)")
     parser.add_argument("--force-update", dest="force_update", action="store_true",
                         help="Force update even if tonie appears up to date")
     parser.add_argument("--convert-video", dest="convert_video", action="store_true",
@@ -663,6 +667,42 @@ def needs_update(tonie, audio_files, force_update=False):
     
     return False, "Up to date"
 
+def select_tonies_by_name(tonies, tonie_households):
+    """Pick the Tonie to update without the menu, for --non-interactive runs.
+
+    Updating clears a Tonie's chapters, so this never guesses. Without --tonie it
+    only proceeds when there is exactly one Tonie it could mean.
+    """
+    if not args.tonie_name:
+        if len(tonies) == 1:
+            logging.info(f"Non-interactive mode: '{tonies[0].name}' is the only "
+                         f"Creative Tonie on the account")
+            return [tonies[0]]
+
+        available = ", ".join(sorted(t.name for t in tonies))
+        raise ValueError(
+            f"--non-interactive needs --tonie NAME when the account holds more than one "
+            f"Creative Tonie, since updating clears the one it picks. "
+            f"Available: {available}"
+        )
+
+    wanted = normalize_title(args.tonie_name)
+    matches = [t for t in tonies if normalize_title(t.name) == wanted]
+
+    if not matches:
+        available = ", ".join(sorted(t.name for t in tonies))
+        raise ValueError(f"No Creative Tonie named '{args.tonie_name}'. "
+                         f"Available: {available}")
+
+    if len(matches) > 1:
+        households = ", ".join(sorted(tonie_households.get(t.id, 'Unknown')
+                                      for t in matches))
+        raise ValueError(f"'{args.tonie_name}' is ambiguous - {len(matches)} Creative "
+                         f"Tonies share that name, in these households: {households}")
+
+    logging.info(f"Non-interactive mode: updating '{matches[0].name}'")
+    return matches
+
 def display_tonies_menu(tonies, tonie_households, audio_files):
     """Display interactive menu for selecting tonies"""
     print("\n" + "="*70)
@@ -979,9 +1019,7 @@ def main(argv=None):
         
         # Interactive or non-interactive mode
         if args.non_interactive:
-            # Non-interactive: use first tonie (backward compatibility)
-            selected_tonies = [all_tonies[0]]
-            logging.info(f"Non-interactive mode: updating '{all_tonies[0].name}'")
+            selected_tonies = select_tonies_by_name(all_tonies, tonie_households)
         else:
             # Interactive mode
             selected_tonies = display_tonies_menu(all_tonies, tonie_households, audio_files)
