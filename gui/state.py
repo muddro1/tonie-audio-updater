@@ -4,6 +4,7 @@ The GUI holds no config of its own. Its controls become a normal argv list, whic
 tony.parse_args() turns into the same args the command line produces - so defaults,
 types and validation have one definition, in build_parser().
 """
+import os
 from dataclasses import dataclass, field
 from typing import List
 
@@ -66,18 +67,17 @@ def build_argv(state):
         if enabled:
             argv.append(flag)
 
-    if len(state.sources) == 1:
-        # A single source is passed via "--input-path=VALUE". argparse's option
-        # detection treats any bare token that starts with "-" and isn't a known
-        # flag (and doesn't look like a negative number) as "an option we don't
-        # recognize" rather than as this argument's value - even for nargs="+" -
-        # so a source such as "--dry-run.mp3" would otherwise be rejected. The
-        # "=" form sidesteps that: argparse takes everything after "=" verbatim
-        # as the one value, with no re-classification.
-        argv.append(f"--input-path={state.sources[0]}")
-    else:
-        # Last, because nargs="+" consumes until the next flag
-        argv += ["-i", *state.sources]
+    # A local path is normalised to absolute so a leading "-" (which argparse's
+    # option detection would otherwise misread as an unrecognized flag, even for
+    # nargs="+") becomes structurally impossible - an absolute path always starts
+    # with a path separator, never "-". A URL is left untouched: it always starts
+    # with "http://" or "https://" per tony.is_url, so it can never look like a
+    # flag either, and os.path.abspath() would corrupt it (it would resolve
+    # against the cwd and collapse the "//" after the scheme).
+    sources = [s if tony.is_url(s) else os.path.abspath(s) for s in state.sources]
+
+    # Last, because nargs="+" consumes until the next flag
+    argv += ["-i", *sources]
 
     return argv
 

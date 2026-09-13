@@ -1,4 +1,6 @@
 """The GUI's controls become an argv list, so both front ends share one parser."""
+import os
+
 import pytest
 
 import tony
@@ -24,11 +26,42 @@ def test_sources_become_input_paths():
 
 
 def test_a_source_that_looks_like_a_flag_is_still_a_source():
-    """A file named '--dry-run.mp3' must not become a flag."""
+    """A file named '--dry-run.mp3' must not become a flag.
+
+    Local sources are normalised to absolute paths (see
+    test_a_relative_path_becomes_absolute_but_a_url_does_not), so the exact
+    literal no longer survives - what must survive is that it is still read as
+    the one source, never as the --dry-run flag.
+    """
     argv = build_argv(GuiState(sources=["--dry-run.mp3"]))
     parsed = tony.build_parser().parse_args(argv)
-    assert parsed.input_paths == ["--dry-run.mp3"]
+    assert parsed.input_paths == [os.path.abspath("--dry-run.mp3")]
     assert parsed.dry_run is False
+
+
+def test_several_sources_including_one_with_a_leading_dash():
+    """A leading dash must not derail parsing when it is not the only source."""
+    argv = build_argv(GuiState(sources=["/a", "-b.mp3", "https://example.com/x"]))
+    parsed = tony.build_parser().parse_args(argv)
+    assert parsed.input_paths == [
+        os.path.abspath("/a"),
+        os.path.abspath("-b.mp3"),
+        "https://example.com/x",
+    ]
+
+
+def test_a_url_source_survives_unchanged():
+    """A URL must never be run through os.path.abspath, which would corrupt it."""
+    argv = build_argv(GuiState(sources=["https://example.com/x"]))
+    parsed = tony.build_parser().parse_args(argv)
+    assert parsed.input_paths == ["https://example.com/x"]
+
+
+def test_a_relative_path_becomes_absolute_but_a_url_does_not():
+    argv = build_argv(GuiState(sources=["relative/dir", "https://example.com/x"]))
+    parsed = tony.build_parser().parse_args(argv)
+    assert parsed.input_paths[0] == os.path.abspath("relative/dir")
+    assert parsed.input_paths[1] == "https://example.com/x"
 
 
 def test_boolean_controls_emit_their_flags():
