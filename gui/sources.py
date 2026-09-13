@@ -11,6 +11,12 @@ from typing import List, Optional
 import tony
 
 
+# Kinds that group other items rather than being uploadable media themselves. A
+# container is never a leaf, even when empty - adding a future grouping kind (a
+# playlist, an album) only needs to be listed here to get the same guarantee.
+CONTAINER_KINDS = ("folder",)
+
+
 @dataclass
 class SourceItem:
     """One row in the source list. A folder or link also has tickable children."""
@@ -21,6 +27,11 @@ class SourceItem:
     children: List["SourceItem"] = field(default_factory=list)
     selected: bool = True
     error: Optional[str] = None
+
+    @property
+    def is_container(self):
+        """True for a kind that groups other items and can never itself be media."""
+        return self.kind in CONTAINER_KINDS
 
 
 def expand(value):
@@ -60,6 +71,10 @@ def _expand_link(url):
         item.error = str(e)
         return item
 
+    if not entries:
+        item.error = "No playable videos found at this link"
+        return item
+
     item.children = [
         SourceItem(kind="link", value=entry["url"], title=entry["title"],
                    duration=entry["duration"])
@@ -77,16 +92,17 @@ def _expand_link(url):
 def _leaves(items):
     """Yield only real, uploadable leaves.
 
-    A container - a folder, or a link with children - is never itself a leaf, even
-    when empty: an empty folder holds no files, so it must contribute nothing rather
-    than be mistaken for one. A link that failed to probe is kept in the list with its
-    error, but it is not a leaf either: it has no real media behind it, so it must not
-    reach resolved_paths or be counted in totals - one bad link must not sink the run.
+    A container is never itself a leaf, even when empty: an empty folder holds no
+    files, so it must contribute nothing rather than be mistaken for one. A link that
+    failed to probe - or probed cleanly but found nothing - is kept in the list with
+    its error, but it is not a leaf either: it has no real media behind it, so it must
+    not reach resolved_paths or be counted in totals - one bad link must not sink the
+    run.
     """
     for item in items:
         if item.children:
             yield from _leaves(item.children)
-        elif item.selected and not item.error and item.kind != "folder":
+        elif item.selected and not item.error and not item.is_container:
             yield item
 
 

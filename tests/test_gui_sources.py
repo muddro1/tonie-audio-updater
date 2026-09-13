@@ -153,3 +153,17 @@ def test_a_folder_with_children_still_resolves_them():
 
     assert resolved_paths([folder]) == ["/music/a.mp3", "/music/b.mp3"]
     assert totals([folder]) == (2, 30.0)
+
+
+def test_a_link_that_probes_to_nothing_gets_an_error(configure, monkeypatch):
+    configure()
+    monkeypatch.setattr(tony, "probe_url", lambda url: [])
+
+    item = expand("https://example.com/playlist?list=all-deleted")
+
+    assert item.error is not None
+    assert item.children == []
+    assert resolved_paths([item]) == []
+    count, seconds = totals([item])
+    assert count == 0
+    assert seconds == 0.0
