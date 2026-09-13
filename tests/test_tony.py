@@ -4,6 +4,7 @@ The tests that measure or truncate audio shell out to a real ffmpeg rather than
 mocking it, since the behaviour under test is precisely what ffmpeg does at a frame
 boundary. They skip when ffmpeg is missing.
 """
+import logging
 import os
 from types import SimpleNamespace
 
@@ -419,3 +420,100 @@ def test_find_files_ignores_other_extensions(tmp_path):
     found = tony.find_files(str(tmp_path), tony.AUDIO_EXTENSIONS)
 
     assert [os.path.basename(p) for p in found] == ["keep.mp3"]
+
+
+# --- upload recovery ------------------------------------------------------
+
+class FakeTonie:
+    def __init__(self, name="Elephant", chapters=()):
+        self.id = "t1"
+        self.name = name
+        self.chapters = [SimpleNamespace(title=t) for t in chapters]
+
+
+class FakeAPI:
+    """Records calls, and can be told to fail a given upload a number of times."""
+
+    def __init__(self, fail_on=None, fail_times=0):
+        self.calls = []
+        self.fail_on = fail_on
+        self.fail_times = fail_times
+        self._failures = 0
+
+    def clear_all_chapter_of_tonie(self, tonie):
+        self.calls.append("clear")
+
+    def upload_file_to_tonie(self, tonie, filepath, title):
+        if title == self.fail_on and self._failures < self.fail_times:
+            self._failures += 1
+            self.calls.append(f"upload:{title}:fail")
+            raise ConnectionError("network went away")
+        self.calls.append(f"upload:{title}")
+
+    def get_households(self):
+        return []
+
+
+def test_existing_chapters_are_logged_before_they_are_cleared(configure, caplog):
+    """Clearing is unavoidable, so a record of what was there is the only safety net."""
+    configure()
+    tonie = FakeTonie(chapters=["Old One", "Old Two"])
+    api = FakeAPI()
+
+    with caplog.at_level(logging.INFO):
+        tony.update_tonie(api, tonie, {"t1": "Home"}, [tony.AudioTitle("/a.mp3", "New")])
+
+    assert "Old One" in caplog.text
+    assert "Old Two" in caplog.text
+    # The record has to come before the clear, or it is worthless
+    order = [r.message for r in caplog.records]
+    logged = next(i for i, m in enumerate(order) if "Old One" in m)
+    cleared = next(i for i, m in enumerate(order) if "Clearing" in m)
+    assert logged < cleared
+
+
+def test_a_transient_upload_failure_is_retried(configure):
+    configure("--upload-retries", "3", "--retry-delay", "0")
+    api = FakeAPI(fail_on="Two", fail_times=2)
+    files = [tony.AudioTitle("/a.mp3", "One"), tony.AudioTitle("/b.mp3", "Two")]
+
+    tony.update_tonie(api, FakeTonie(), {"t1": "Home"}, files)
+
+    assert api.calls == [
+        "clear", "upload:One",
+        "upload:Two:fail", "upload:Two:fail", "upload:Two",
+    ]
+
+
+def test_an_upload_that_keeps_failing_raises(configure):
+    configure("--upload-retries", "2", "--retry-delay", "0")
+    api = FakeAPI(fail_on="One", fail_times=99)
+
+    with pytest.raises(ConnectionError):
+        tony.update_tonie(api, FakeTonie(), {"t1": "Home"},
+                          [tony.AudioTitle("/a.mp3", "One")])
+
+    assert api.calls.count("upload:One:fail") == 2
+
+
+def test_a_failed_upload_reports_what_was_lost(configure, caplog):
+    configure("--upload-retries", "1", "--retry-delay", "0")
+    api = FakeAPI(fail_on="New", fail_times=99)
+    tonie = FakeTonie(chapters=["Old One"])
+
+    with pytest.raises(ConnectionError):
+        tony.update_tonie(api, tonie, {"t1": "Home"},
+                          [tony.AudioTitle("/a.mp3", "New")])
+
+    assert "Old One" in caplog.text
+    assert "no longer on" in caplog.text.lower() or "lost" in caplog.text.lower()
+
+
+def test_a_dry_run_neither_clears_nor_uploads(configure):
+    configure("--dry-run")
+    api = FakeAPI()
+
+    tony.update_tonie(api, FakeTonie(chapters=["Old"]), {"t1": "Home"},
+                      [tony.AudioTitle("/a.mp3", "New")], dry_run=True)
+
+    assert api.calls == []

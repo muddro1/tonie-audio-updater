@@ -3,6 +3,7 @@
 
 import getpass
 import logging
+import time
 import os
 import sys
 import tempfile
@@ -71,6 +72,10 @@ Usage: {os.path.basename(__file__)} [options]
                         help="Maximum minutes a Creative Tonie accepts; a single longer file is truncated to this length (default: 90)")
     parser.add_argument("--no-duration-limit", dest="no_duration_limit", action="store_true",
                         help="Skip the duration limit check entirely (no truncation, no warning)")
+    parser.add_argument("--upload-retries", dest="upload_retries", type=int, default=3,
+                        help="Attempts per file before giving up on an upload (default: 3)")
+    parser.add_argument("--retry-delay", dest="retry_delay", type=float, default=2.0,
+                        help="Seconds to wait between upload attempts, doubling each time (default: 2.0)")
 
     return parser
 
@@ -837,12 +842,53 @@ def describe_audio_file(audio_file):
         notes.append(f"truncated to {args.max_duration:g} min")
     return f" ({', '.join(notes)})" if notes else ""
 
+def existing_chapter_titles(tonie):
+    """The chapter titles currently on a Tonie, for the record kept before clearing"""
+    if not getattr(tonie, 'chapters', None):
+        return []
+    return [getattr(chapter, 'title', 'Untitled') for chapter in tonie.chapters]
+
+def upload_with_retries(tonie_api, tonie, audio_file):
+    """Upload one file, retrying a transient failure.
+
+    A Tonie's chapters have already been cleared by the time uploading starts - the
+    90 minute limit is on a Tonie's total content, so new audio cannot be added
+    alongside the old and the clear cannot be deferred. That makes a dropped
+    connection mid-upload expensive, so it is worth a few attempts.
+    """
+    attempts = max(1, args.upload_retries)
+    delay = args.retry_delay
+
+    for attempt in range(1, attempts + 1):
+        try:
+            tonie_api.upload_file_to_tonie(tonie, audio_file.filepath, audio_file.title)
+            return
+        except Exception as e:
+            if attempt == attempts:
+                logging.error(f"Giving up on '{audio_file.title}' after {attempts} "
+                              f"attempts: {e}")
+                raise
+
+            logging.warning(f"Upload of '{audio_file.title}' failed "
+                            f"(attempt {attempt}/{attempts}): {e}")
+            if delay > 0:
+                logging.info(f"Retrying in {delay:g}s")
+                time.sleep(delay)
+            delay *= 2
+
 def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False):
     """Update a single Creative Tonie with audio files"""
     household = tonie_households.get(tonie.id, 'Unknown')
     logging.info(f"{'[DRY RUN] ' if dry_run else ''}Updating '{tonie.name}' (Household: {household}) with {len(audio_files)} files")
     
     if not dry_run:
+        # Record what is on the Tonie before it goes. Clearing is unavoidable, so if the
+        # upload then fails this log is the only way to know what was lost.
+        previous_titles = existing_chapter_titles(tonie)
+        if previous_titles:
+            logging.info(f"'{tonie.name}' currently holds {len(previous_titles)} "
+                         f"chapters, about to be replaced: {previous_titles}")
+
         # Clear existing chapters
         logging.info(f"Clearing all chapters from '{tonie.name}'")
         tonie_api.clear_all_chapter_of_tonie(tonie)
@@ -851,7 +897,15 @@ def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False)
         for i, audio_file in enumerate(audio_files, 1):
             status = describe_audio_file(audio_file)
             logging.info(f"Uploading ({i}/{len(audio_files)}): {audio_file.title}{status}")
-            tonie_api.upload_file_to_tonie(tonie, audio_file.filepath, audio_file.title)
+            try:
+                upload_with_retries(tonie_api, tonie, audio_file)
+            except Exception:
+                logging.error(f"'{tonie.name}' is now incomplete: {i - 1} of "
+                              f"{len(audio_files)} files uploaded")
+                if previous_titles:
+                    logging.error(f"These chapters were cleared and are no longer on "
+                                  f"'{tonie.name}': {previous_titles}")
+                raise
         
         # After upload, refresh the tonie data to get updated chapters
         try:
