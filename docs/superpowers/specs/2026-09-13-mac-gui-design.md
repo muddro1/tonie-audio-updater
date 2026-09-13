@@ -33,7 +33,8 @@ video conversion, silence trimming, the 90 minute duration cap, `needs_update`,
 | `main` | 26 | 0 |
 | everything else | 0 | 0 |
 
-The GUI replaces those three and reuses the rest unchanged.
+The GUI replaces those three and reuses the rest, with one scoped change to the
+engine described in the next section.
 
 ## Toolkit
 
@@ -55,12 +56,33 @@ separate dynamically loaded files inside the bundle. For distribution within one
 household this raises no practical obligation. Public distribution is out of scope, and
 would want the licence terms reviewed alongside the signing and notarization work.
 
+## One change to the engine: `-i` accepts files
+
+Everything else in `tony.py` is reused as it stands, but the GUI needs to upload a
+hand-picked set of files, and `-i` currently takes a single directory.
+
+`-i` gains `nargs="+"` and accepts any mix of files and directories. A directory is
+scanned as it is today; a file named directly is taken as given, subject to the same
+extension check.
+
+```bash
+python tony.py -i ~/Music/Kids                 # as before
+python tony.py -i story1.mp3 story2.mp3        # individual files
+python tony.py -i ~/Music/Kids extra.mp3       # both
+```
+
+`get_audio_files()` takes a list of paths rather than one directory. The CLI gains the
+same ability, which is the point of doing it here rather than in the GUI: the
+alternative was a temp directory of symlinks that would have made every log line point
+somewhere the user never put a file.
+
+This is the only engine change the GUI requires, and it lands first, with its own tests,
+before any GUI code.
+
 ## Architecture
 
-`tony.py` is not modified.
-
 ```
-tony.py                  unchanged - CLI entry point and the whole engine
+tony.py                  CLI entry point and the whole engine; only -i changes
 gui/
   __init__.py
   app.py                 main window, wiring, dialogs
@@ -120,29 +142,50 @@ before the first file goes up. The Cancel button therefore warns during upload t
 Tonie will be left incomplete, names the chapter titles that were cleared, and requires
 confirmation.
 
+With several Tonies queued, cancelling stops after the one in flight rather than partway
+through it where possible, and the summary reports which were completed, which was
+interrupted and which were never started.
+
 ## Screens and flow
 
 ### Main window
 
 ```
-┌─ Tonie Audio Updater ──────────────────────────┐
-│ Folder:  [ ~/Music/Kids            ] [Choose…] │
-│          8 files · 47 min                       │
-│                                                 │
-│ Tonie:   [ Elephant (Home)        ▾]           │
-│          ⚠ needs update · 5 chapters            │
-│                                                 │
-│ ▸ Advanced                                      │
-│                                                 │
-│ ────────────────────────────────────────────── │
-│ [████████████░░░░░░░░] Uploading 3 of 8         │
-│ ┌─ log ───────────────────────────────────────┐ │
-│ │ Clearing all chapters from 'Elephant'       │ │
-│ │ Uploading (3/8): Bedtime Story              │ │
-│ └─────────────────────────────────────────────┘ │
-│                            [Cancel]  [ Upload ] │
-└─────────────────────────────────────────────────┘
+┌─ Tonie Audio Updater ────────────────────────────────┐
+│ Source:  ┌────────────────────────────────────────┐  │
+│          │ ~/Music/Kids                 6 files   │  │
+│          │ ~/Desktop/extra.mp3                    │  │
+│          └────────────────────────────────────────┘  │
+│          [Add Files…] [Add Folder…] [Remove]         │
+│          7 files · 47 min                            │
+│                                                      │
+│ Tonies:  ┌────────────────────────────────────────┐  │
+│          │ ☑ Elephant    Home   ⚠ needs update    │  │
+│          │ ☑ Lion        Home   ⚠ needs update    │  │
+│          │ ☐ Giraffe     Attic  ✅ up to date      │  │
+│          └────────────────────────────────────────┘  │
+│          [Select all] [Select needing update]        │
+│                                                      │
+│ ▸ Advanced                                           │
+│                                                      │
+│ ──────────────────────────────────────────────────── │
+│ [████████░░░░░░░░] Elephant — uploading 3 of 7       │
+│ ┌─ log ────────────────────────────────────────────┐ │
+│ │ Clearing all chapters from 'Elephant'            │ │
+│ │ Uploading (3/7): Bedtime Story                   │ │
+│ └──────────────────────────────────────────────────┘ │
+│                               [Cancel]  [ Upload ]   │
+└──────────────────────────────────────────────────────┘
 ```
+
+The source list accepts files and folders in any combination, added through the buttons
+or dropped onto the window. Dropping is the natural gesture on macOS for "these files",
+and Qt gives it cheaply.
+
+The Tonie list is multi-select, because uploading the same bedtime stories to two
+children's Tonies is a normal thing to do. Each row shows the name, the household and
+whether it needs updating — the same information the CLI menu prints — and the two
+buttons mirror the menu's `a` and `u` shortcuts.
 
 The `Advanced` disclosure is collapsed by default and holds every remaining CLI option,
 in four labelled groups:
@@ -159,22 +202,33 @@ in four labelled groups:
    either is missing, show the sign-in sheet.
 2. **Connect** — the worker constructs `TonieAPI` and calls
    `tony.get_all_creative_tonies(api)`, filling the Tonie dropdown with name and household.
-3. **Choose folder** — a *cheap* scan only: `tony.find_files()` plus
-   `tony.get_audio_duration()` per file, to show the file count, total runtime, and any
+3. **Add sources** — a *cheap* scan only, across every path in the source list:
+   `tony.find_files()` for directories, the paths themselves for files, then
+   `tony.get_audio_duration()` per file to show the count, total runtime and any
    over-limit warning. No conversion, no truncation, no temp files.
 4. **Upload** — a confirmation dialog states what is about to happen, mirroring what
-   `confirm_selection` prints: which Tonie, how many files, total runtime, how many
-   chapters will be cleared, and any warning. On confirmation the worker runs
-   `tony.get_audio_files()` (conversion, trimming, truncation), then `tony.needs_update`,
-   then `tony.update_tonie`.
-5. **Finish** — a summary, and `tony.cleanup_converted_files()` in a `finally` so temp
-   files go even on failure or cancellation.
+   `confirm_selection` prints: every Tonie selected, how many files, total runtime, how
+   many chapters will be cleared **across all of them**, and any warning. A selected
+   Tonie that is already up to date is named as one that will be skipped, unless Force
+   update is on — the same decision `main()` makes.
+5. **Run** — the worker calls `tony.get_audio_files()` once (conversion, trimming,
+   truncation are shared across every target), then loops the selected Tonies calling
+   `tony.needs_update` and `tony.update_tonie` for each. Progress shows which Tonie is
+   in flight and its position in the queue.
+6. **Finish** — a summary of which Tonies were updated, skipped and failed, and
+   `tony.cleanup_converted_files()` in a `finally` so temp files go even on failure or
+   cancellation.
+
+A Tonie that fails does not abandon the rest: the remaining ones are still attempted and
+the summary reports each outcome, matching how `main()` treats a failure today. The
+failure detail — how many files landed, which chapters were cleared — is reported per
+Tonie.
 
 ### Why the preview is cheap
 
 `get_audio_files()` converts video, trims silence and truncates over-long files. Running
-it on folder selection would freeze the window for a minute on a folder holding a large
-MKV, for a preview. The cheap scan reuses `find_files()` and `get_audio_duration()`,
+it when a source is added would freeze the window for a minute on a folder holding a
+large MKV, for a preview. The cheap scan reuses `find_files()` and `get_audio_duration()`,
 both already public in `tony.py`, and costs one short ffmpeg probe per file.
 
 The preview therefore reports pre-conversion durations. Where that matters — a video
@@ -235,16 +289,20 @@ The 79 existing engine tests are untouched and keep passing.
 
 New tests:
 
+- **Engine, for the `-i` change** — a directory behaves as before, a named file is
+  accepted, a mix of both works, a named file with an unsupported extension is rejected,
+  and a missing path is an error naming which one
 - **`test_gui_state.py`** — `build_argv()` for every control, including that defaults
-  produce the same `args` as the bare CLI, and that a flag added to `build_parser()`
-  without a control is caught
+  produce the same `args` as the bare CLI, that several source paths survive the trip,
+  and that a flag added to `build_parser()` without a control is caught
 - **`test_keychain.py`** — store, read, overwrite and delete against a throwaway service
   name, and the behaviour when no entry exists
 - **`test_gui_app.py`** — the window driven headless under `QT_QPA_PLATFORM=offscreen`
-  with `QTest`: choosing a folder updates the summary, an over-limit folder shows the
-  warning, Upload against a stubbed `TonieAPI` clears and uploads in the right order,
-  a failing upload surfaces the dialog, and controls are disabled while a run is in
-  progress
+  with `QTest`: adding a folder and a loose file updates the summary, an over-limit
+  source shows the warning, checking two Tonies and pressing Upload clears and uploads to
+  both in order against a stubbed `TonieAPI`, an up-to-date Tonie is skipped unless Force
+  update is set, one Tonie failing still attempts the next, a failing upload surfaces the
+  dialog, and controls are disabled while a run is in progress
 
 Headless Qt tests run in CI and locally without a display.
 
@@ -256,17 +314,17 @@ and the window looks right on a real display.
 
 - Code signing, notarization and public distribution
 - A Windows or Linux GUI
-- Uploading to more than one Tonie in a single run; the CLI menu allows it, the GUI
-  targets one at a time. A second run covers the case
 - Editing or reordering chapters already on a Tonie; the API surface used here replaces
   all chapters
 - Bundling FFmpeg, as described above
 
 ## Success criteria
 
-1. A household member can open the `.app`, pick a folder, pick a Tonie, press Upload and
-   have the audio arrive, without a terminal
-2. Every CLI option is reachable from the Advanced section
-3. The GUI cannot drift from the CLI: both go through `build_parser()`
-4. `tony.py` is unchanged, and its tests still pass
-5. A failed upload tells the user what was lost, as the CLI does
+1. A household member can open the `.app`, add a folder or drop files on it, tick one or
+   more Tonies, press Upload and have the audio arrive, without a terminal
+2. The same set of files can go to several Tonies in one run, converted once
+3. Every CLI option is reachable from the Advanced section
+4. The GUI cannot drift from the CLI: both go through `build_parser()`
+5. The only engine change is `-i` accepting files as well as directories, it is covered
+   by tests, and the existing 79 tests still pass
+6. A failed upload tells the user what was lost, as the CLI does, per Tonie
