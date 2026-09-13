@@ -1,0 +1,5 @@
+# Dependencies for the macOS GUI
+#
+# Install with: pip install -r requirements-gui.txt
+
+PySide6>=6.11
