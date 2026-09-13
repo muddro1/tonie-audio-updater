@@ -5,7 +5,6 @@ import getpass
 import logging
 import os
 import sys
-import glob
 import tempfile
 import subprocess
 from pathlib import Path
@@ -110,10 +109,31 @@ def setup_logging():
     logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                         format='%(asctime)s | %(levelname)s | %(message)s')
 
+AUDIO_EXTENSIONS = ('.mp3', '.wav', '.m4a', '.ogg')
+VIDEO_EXTENSIONS = ('.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv')
+
 # The Tonie service enforces its duration limit strictly, and stream copying can only
 # cut on a frame boundary. Aim this far under the limit so the result fits.
 CAP_SAFETY_MARGIN = 1.0  # seconds
 CAP_MAX_ATTEMPTS = 4  # margin widens each attempt: 1s, 5s, 21s, 85s
+
+def find_files(directory, extensions):
+    """List the files in directory with one of these extensions, ignoring case.
+
+    glob patterns match case-sensitively even on a case-insensitive filesystem, so
+    `*.mp3` silently misses a file named Story.MP3 - the usual shape of a track
+    straight off a ripper, or a clip off a camera.
+    """
+    matches = []
+
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            if os.path.splitext(entry.name)[1].lower() in extensions:
+                matches.append(entry.path)
+
+    return sorted(matches)
 
 def check_ffmpeg():
     """Check if ffmpeg is available"""
@@ -316,26 +336,19 @@ def get_audio_files(input_path):
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input path does not exist: {input_path}")
     
-    # Support multiple audio formats
-    audio_extensions = ['*.mp3', '*.wav', '*.m4a', '*.ogg']
-    video_extensions = ['*.mkv', '*.mp4', '*.avi', '*.mov', '*.wmv', '*.flv']
-    
     # Get audio files first
-    for extension in audio_extensions:
-        for audio_file in glob.glob(os.path.join(input_path, extension)):
-            title = os.path.splitext(os.path.basename(audio_file))[0]
-            # Truncate title to 100 characters
-            title = truncate_title(title, 100)
-            audio_files.append(AudioTitle(filepath=audio_file, title=title))
+    for audio_file in find_files(input_path, AUDIO_EXTENSIONS):
+        title = os.path.splitext(os.path.basename(audio_file))[0]
+        # Truncate title to 100 characters
+        title = truncate_title(title, 100)
+        audio_files.append(AudioTitle(filepath=audio_file, title=title))
     
     # Check if we need to auto-enable video conversion
     auto_convert_video = False
     if not audio_files and not args.convert_video:
         # No audio files found, check if there are video files
-        video_files = []
-        for extension in video_extensions:
-            video_files.extend(glob.glob(os.path.join(input_path, extension)))
-        
+        video_files = find_files(input_path, VIDEO_EXTENSIONS)
+
         if video_files:
             logging.info(f"No audio files found, but found {len(video_files)} video files")
             logging.info("Automatically enabling video conversion...")
@@ -347,10 +360,8 @@ def get_audio_files(input_path):
             logging.error(f"ffmpeg not found at '{args.ffmpeg_path}'. Please install ffmpeg or specify correct path with --ffmpeg-path")
             raise FileNotFoundError("ffmpeg is required for video conversion")
         
-        video_files = []
-        for extension in video_extensions:
-            video_files.extend(glob.glob(os.path.join(input_path, extension)))
-        
+        video_files = find_files(input_path, VIDEO_EXTENSIONS)
+
         if video_files:
             if auto_convert_video:
                 logging.info(f"Auto-converting {len(video_files)} video files to audio")

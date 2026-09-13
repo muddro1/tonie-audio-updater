@@ -349,3 +349,73 @@ def test_an_empty_prompted_password_is_an_error(monkeypatch):
 
     with pytest.raises(ValueError, match="[Pp]assword"):
         tony.resolve_credentials(a)
+
+
+# --- file discovery is case-insensitive -----------------------------------
+
+@requires_ffmpeg
+def test_uppercase_audio_extensions_are_found(configure, tone_file, tmp_path):
+    """Files straight off a ripper or camera are often .MP3 / .MOV."""
+    tone_file(2, "Shouty.mp3")
+    (tmp_path / "Shouty.mp3").rename(tmp_path / "Shouty.MP3")
+    configure()
+
+    files = tony.get_audio_files(str(tmp_path))
+
+    assert [f.title for f in files] == ["Shouty"]
+
+
+@requires_ffmpeg
+def test_mixed_case_extensions_are_all_found(configure, tone_file, tmp_path):
+    for name, renamed in [("a.mp3", "a.MP3"), ("b.mp3", "b.Mp3"), ("c.mp3", "c.mp3")]:
+        tone_file(2, name)
+        if name != renamed:
+            (tmp_path / name).rename(tmp_path / renamed)
+    configure()
+
+    files = tony.get_audio_files(str(tmp_path))
+
+    assert sorted(f.title for f in files) == ["a", "b", "c"]
+
+
+@requires_ffmpeg
+def test_each_file_is_only_found_once(configure, tone_file, tmp_path):
+    """A case-insensitive match must not report the same file twice."""
+    tone_file(2, "once.mp3")
+    configure()
+
+    files = tony.get_audio_files(str(tmp_path))
+
+    assert len(files) == 1
+
+
+@requires_ffmpeg
+def test_uppercase_video_extensions_are_converted(configure, tone_file, tmp_path):
+    """.MOV off a phone or camera should convert like .mov does."""
+    source = tone_file(3, "Clip.m4a")
+    source.rename(tmp_path / "Clip.MOV")
+    configure("--convert-video")
+
+    files = tony.get_audio_files(str(tmp_path))
+
+    assert [f.title for f in files] == ["Clip"]
+    assert files[0].is_converted is True
+    tony.cleanup_converted_files()
+
+
+def test_find_files_ignores_directories(tmp_path):
+    (tmp_path / "nested.mp3").mkdir()
+    (tmp_path / "real.mp3").write_text("")
+
+    found = tony.find_files(str(tmp_path), tony.AUDIO_EXTENSIONS)
+
+    assert [os.path.basename(p) for p in found] == ["real.mp3"]
+
+
+def test_find_files_ignores_other_extensions(tmp_path):
+    for name in ("keep.mp3", "skip.txt", "skip.pdf", "noext"):
+        (tmp_path / name).write_text("")
+
+    found = tony.find_files(str(tmp_path), tony.AUDIO_EXTENSIONS)
+
+    assert [os.path.basename(p) for p in found] == ["keep.mp3"]
