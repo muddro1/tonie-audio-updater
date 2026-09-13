@@ -136,3 +136,64 @@ def test_a_dry_run_touches_nothing(configure):
 
     assert outcomes[0].status == "updated"
     assert api.calls == []
+
+
+def test_a_cancellation_mid_upload_is_reported_cancelled_not_updated(configure):
+    """The engine polls should_cancel before each file; if it fires partway through a
+    Tonie's own upload, that Tonie must be reported cancelled - not updated - since its
+    chapters were already cleared and only some files landed."""
+    configure()
+    api = FakeAPI()
+    tonies = [FakeTonie("t1", "Elephant")]
+    uploaded = []
+
+    def should_cancel():
+        return len(uploaded) >= 1
+
+    original_upload = api.upload_file_to_tonie
+
+    def tracking_upload(tonie, path, title):
+        original_upload(tonie, path, title)
+        uploaded.append(title)
+
+    api.upload_file_to_tonie = tracking_upload
+
+    outcomes = upload_to_tonies(api, tonies, HOUSEHOLDS, _files("One", "Two"),
+                                should_cancel=should_cancel)
+
+    assert outcomes[0].status == "cancelled"
+    assert "incomplete" in outcomes[0].detail
+    assert api.calls == ["clear:Elephant", "upload:Elephant:One"]
+
+
+def test_a_cancellation_after_completion_still_reports_updated(configure):
+    """Regression guard: a should_cancel flag that only flips after a Tonie's upload has
+    fully finished must not relabel that already-completed Tonie as cancelled."""
+    configure()
+    api = FakeAPI()
+    tonies = [FakeTonie("t1", "Elephant"), FakeTonie("t2", "Lion")]
+    cancelled = []
+
+    def should_cancel():
+        return bool(cancelled)
+
+    def cancel_after_first(*_):
+        cancelled.append(True)
+
+    original = tony.update_tonie
+
+    def spy(*a, **kw):
+        result = original(*a, **kw)
+        cancel_after_first()
+        return result
+
+    tony.update_tonie = spy
+    try:
+        outcomes = upload_to_tonies(api, tonies, HOUSEHOLDS, _files("One"),
+                                    should_cancel=should_cancel)
+    finally:
+        tony.update_tonie = original
+
+    assert [(o.name, o.status) for o in outcomes] == [
+        ("Elephant", "updated"), ("Lion", "cancelled")]
+    assert "clear:Lion" not in api.calls

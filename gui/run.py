@@ -24,6 +24,12 @@ def upload_to_tonies(api, tonies, households, audio_files, should_cancel=None):
     is the decision the CLI's main() makes. A Tonie that fails does not abandon the ones
     after it. Cancelling stops before the next Tonie starts, and everything not yet
     attempted is reported as cancelled rather than silently dropped.
+
+    A Tonie whose own upload is interrupted partway - the engine polls should_cancel
+    before each file - is reported cancelled, not updated: its chapters were already
+    cleared, so claiming success would tell the user their audio is on the device when
+    it is not. A cancellation that arrives only after a Tonie's upload has fully
+    finished must not retroactively relabel that Tonie; it only stops the ones after it.
     """
     outcomes = []
     cancelled = False
@@ -43,12 +49,36 @@ def upload_to_tonies(api, tonies, households, audio_files, should_cancel=None):
 
         logging.info(f"Update reason for '{tonie.name}': {reason}")
 
+        # Wrap should_cancel so we can tell, after the call returns, whether the engine
+        # actually stopped early on THIS Tonie - as opposed to a cancellation that only
+        # arrives in the gap before the next Tonie starts, which must not relabel this
+        # one. The engine polls the hook before each file, so a recorded True means
+        # precisely "stopped early here".
+        interrupted = False
+
+        def probe(_should_cancel=should_cancel):
+            nonlocal interrupted
+            if _should_cancel is not None and _should_cancel():
+                interrupted = True
+                return True
+            return False
+
         try:
             tony.update_tonie(api, tonie, households, audio_files,
-                              dry_run=tony.args.dry_run, should_cancel=should_cancel)
+                              dry_run=tony.args.dry_run,
+                              should_cancel=probe if should_cancel is not None else None)
         except Exception as e:
             logging.error(f"Failed to update '{tonie.name}': {e}")
             outcomes.append(TonieOutcome(tonie.name, "failed", str(e)))
+            continue
+
+        if interrupted:
+            cancelled = True
+            logging.warning(f"'{tonie.name}' was cancelled partway through and may be "
+                            f"incomplete")
+            outcomes.append(TonieOutcome(
+                tonie.name, "cancelled",
+                "Stopped partway through the upload; this Tonie may be incomplete"))
             continue
 
         outcomes.append(TonieOutcome(tonie.name, "updated", reason))
