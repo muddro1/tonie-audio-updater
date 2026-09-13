@@ -291,7 +291,7 @@ def test_get_audio_files_finds_audio_and_sorts_by_title(configure, tone_file, tm
     tone_file(2, "apple.mp3", frequency=300)
     configure()
 
-    files = tony.get_audio_files(str(tmp_path))
+    files = tony.get_audio_files([str(tmp_path)])
 
     assert [f.title for f in files] == ["apple", "Zebra"]
 
@@ -299,13 +299,13 @@ def test_get_audio_files_finds_audio_and_sorts_by_title(configure, tone_file, tm
 def test_get_audio_files_rejects_a_missing_directory(configure):
     configure()
     with pytest.raises(FileNotFoundError):
-        tony.get_audio_files("/no/such/directory")
+        tony.get_audio_files(["/no/such/directory"])
 
 
 def test_get_audio_files_raises_when_the_directory_is_empty(configure, tmp_path):
     configure()
     with pytest.raises(ValueError, match="No audio files"):
-        tony.get_audio_files(str(tmp_path))
+        tony.get_audio_files([str(tmp_path)])
 
 
 # --- credentials ----------------------------------------------------------
@@ -361,7 +361,7 @@ def test_uppercase_audio_extensions_are_found(configure, tone_file, tmp_path):
     (tmp_path / "Shouty.mp3").rename(tmp_path / "Shouty.MP3")
     configure()
 
-    files = tony.get_audio_files(str(tmp_path))
+    files = tony.get_audio_files([str(tmp_path)])
 
     assert [f.title for f in files] == ["Shouty"]
 
@@ -374,7 +374,7 @@ def test_mixed_case_extensions_are_all_found(configure, tone_file, tmp_path):
             (tmp_path / name).rename(tmp_path / renamed)
     configure()
 
-    files = tony.get_audio_files(str(tmp_path))
+    files = tony.get_audio_files([str(tmp_path)])
 
     assert sorted(f.title for f in files) == ["a", "b", "c"]
 
@@ -385,7 +385,7 @@ def test_each_file_is_only_found_once(configure, tone_file, tmp_path):
     tone_file(2, "once.mp3")
     configure()
 
-    files = tony.get_audio_files(str(tmp_path))
+    files = tony.get_audio_files([str(tmp_path)])
 
     assert len(files) == 1
 
@@ -397,7 +397,7 @@ def test_uppercase_video_extensions_are_converted(configure, tone_file, tmp_path
     source.rename(tmp_path / "Clip.MOV")
     configure("--convert-video")
 
-    files = tony.get_audio_files(str(tmp_path))
+    files = tony.get_audio_files([str(tmp_path)])
 
     assert [f.title for f in files] == ["Clip"]
     assert files[0].is_converted is True

@@ -52,8 +52,10 @@ Usage: {os.path.basename(__file__)} [options]
                         help="Tonie account password. Passing it here exposes it in "
                              "`ps` output and your shell history - prefer "
                              "$TONIE_PASSWORD, or let it be prompted for")
-    parser.add_argument("-i", "--input-path", dest="input_path", required=True, 
-                        help="Path to directory containing audio files (MP3, WAV, M4A, OGG) and optionally video files")
+    parser.add_argument("-i", "--input-path", dest="input_paths", nargs="+",
+                        required=True, metavar="PATH",
+                        help="One or more files or directories containing audio "
+                             "(MP3, WAV, M4A, OGG) and optionally video files")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true",
                         help="Show what would be done without actually updating")
     parser.add_argument("--non-interactive", dest="non_interactive", action="store_true",
@@ -358,81 +360,119 @@ def convert_video_to_audio(video_path, output_dir=None):
         logging.error(f"ffmpeg stderr: {e.stderr}")
         raise
 
-def get_audio_files(input_path):
-    """Get all audio files from the input directory, optionally converting video files"""
+def collect_input_files(input_paths):
+    """Expand the -i arguments into (audio_paths, video_paths).
+
+    A directory is scanned. A file named directly is taken as given, provided its
+    extension is one we handle. Order is preserved and duplicates are dropped, so
+    naming a file twice, or naming a file inside a directory also given, uploads it once.
+    """
+    audio_paths = []
+    video_paths = []
+    seen = set()
+
+    def remember(path, bucket):
+        resolved = os.path.realpath(path)
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        bucket.append(path)
+
+    for raw in input_paths:
+        if os.path.isdir(raw):
+            for found in find_files(raw, AUDIO_EXTENSIONS):
+                remember(found, audio_paths)
+            for found in find_files(raw, VIDEO_EXTENSIONS):
+                remember(found, video_paths)
+            continue
+
+        if not os.path.exists(raw):
+            raise FileNotFoundError(f"Input path does not exist: {raw}")
+
+        extension = os.path.splitext(raw)[1].lower()
+        if extension in AUDIO_EXTENSIONS:
+            remember(raw, audio_paths)
+        elif extension in VIDEO_EXTENSIONS:
+            remember(raw, video_paths)
+        else:
+            raise ValueError(
+                f"Unsupported file type: {os.path.basename(raw)}. Audio: "
+                f"{', '.join(AUDIO_EXTENSIONS)}; video: {', '.join(VIDEO_EXTENSIONS)}"
+            )
+
+    return audio_paths, video_paths
+
+def get_audio_files(input_paths):
+    """Get all audio files from the input paths, optionally converting video files"""
     audio_files = []
     converted_files = []  # Track converted files for cleanup
-    
-    if not os.path.exists(input_path):
-        raise FileNotFoundError(f"Input path does not exist: {input_path}")
-    
-    # Get audio files first
-    for audio_file in find_files(input_path, AUDIO_EXTENSIONS):
+
+    audio_paths, video_paths = collect_input_files(input_paths)
+
+    for audio_file in audio_paths:
         title = os.path.splitext(os.path.basename(audio_file))[0]
         # Truncate title to 100 characters
         title = truncate_title(title, 100)
         audio_files.append(AudioTitle(filepath=audio_file, title=title))
-    
+
     # Check if we need to auto-enable video conversion
     auto_convert_video = False
-    if not audio_files and not args.convert_video:
-        # No audio files found, check if there are video files
-        video_files = find_files(input_path, VIDEO_EXTENSIONS)
+    if not audio_files and not args.convert_video and video_paths:
+        logging.info(f"No audio files found, but found {len(video_paths)} video files")
+        logging.info("Automatically enabling video conversion...")
+        auto_convert_video = True
 
-        if video_files:
-            logging.info(f"No audio files found, but found {len(video_files)} video files")
-            logging.info("Automatically enabling video conversion...")
-            auto_convert_video = True
-    
     # Handle video files if conversion is enabled (manually or automatically)
     if args.convert_video or auto_convert_video:
         if not check_ffmpeg():
             logging.error(f"ffmpeg not found at '{args.ffmpeg_path}'. Please install ffmpeg or specify correct path with --ffmpeg-path")
             raise FileNotFoundError("ffmpeg is required for video conversion")
-        
-        video_files = find_files(input_path, VIDEO_EXTENSIONS)
+
+        video_files = video_paths
 
         if video_files:
             if auto_convert_video:
                 logging.info(f"Auto-converting {len(video_files)} video files to audio")
             else:
                 logging.info(f"Found {len(video_files)} video files to convert")
-            
+
             if args.trim_silence:
                 logging.info(f"Silence trimming enabled (threshold: {args.silence_threshold}, min duration: {args.min_silence_duration:g}s)")
-            
+
             # Create temp directory for converted files if not keeping them
             temp_dir = None
             if not args.keep_converted:
                 temp_dir = tempfile.mkdtemp(prefix="tonie_converted_")
                 logging.info(f"Using temporary directory for converted files: {temp_dir}")
             else:
-                # Use input directory for converted files
-                temp_dir = input_path
-                logging.info("Converted files will be saved in the input directory")
-            
+                # Each video's converted file is saved alongside it, since there is no
+                # longer a single input directory to collect them in.
+                logging.info("Converted files will be saved alongside their source videos")
+
             for video_file in video_files:
                 try:
+                    if args.keep_converted:
+                        temp_dir = os.path.dirname(video_file)
                     audio_file_path = convert_video_to_audio(video_file, temp_dir)
                     title = os.path.splitext(os.path.basename(video_file))[0]
                     # Truncate title to 100 characters
                     title = truncate_title(title, 100)
                     audio_files.append(AudioTitle(
-                        filepath=audio_file_path, 
-                        title=title, 
+                        filepath=audio_file_path,
+                        title=title,
                         is_converted=True
                     ))
                     converted_files.append(audio_file_path)
                 except Exception as e:
                     logging.error(f"Failed to convert {video_file}: {e}")
                     continue
-    
+
     if not audio_files:
         file_types = "audio files"
         if args.convert_video or auto_convert_video:
             file_types += " or video files"
-        raise ValueError(f"No {file_types} found in {input_path}")
-    
+        raise ValueError(f"No {file_types} found in {', '.join(input_paths)}")
+
     # Sort by filename for consistent ordering
     audio_files.sort(key=lambda x: x.title.lower())
 
@@ -1005,9 +1045,10 @@ def main(argv=None):
     setup_logging()
 
     try:
-        # Validate input path
-        if not os.path.exists(args.input_path):
-            raise FileNotFoundError(f"Input path does not exist: {args.input_path}")
+        # Validate input paths
+        for path in args.input_paths:
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Input path does not exist: {path}")
         
         username, password = resolve_credentials(args)
 
@@ -1019,13 +1060,13 @@ def main(argv=None):
         tonie_api = TonieAPI(username, password)
         
         # Get audio files
-        print(f"Scanning for audio files in: {args.input_path}")
+        print(f"Scanning for audio files in: {', '.join(args.input_paths)}")
         if args.convert_video:
             print("Video conversion is enabled - will convert MKV, MP4, AVI, MOV files to MP3")
         else:
             print("Will auto-enable video conversion if no audio files are found")
         
-        audio_files = get_audio_files(args.input_path)
+        audio_files = get_audio_files(args.input_paths)
         converted_count = sum(1 for af in audio_files if af.is_converted)
         
         print(f"Found {len(audio_files)} audio files")
