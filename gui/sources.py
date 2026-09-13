@@ -75,10 +75,18 @@ def _expand_link(url):
 
 
 def _leaves(items):
+    """Yield only real, uploadable leaves.
+
+    A container - a folder, or a link with children - is never itself a leaf, even
+    when empty: an empty folder holds no files, so it must contribute nothing rather
+    than be mistaken for one. A link that failed to probe is kept in the list with its
+    error, but it is not a leaf either: it has no real media behind it, so it must not
+    reach resolved_paths or be counted in totals - one bad link must not sink the run.
+    """
     for item in items:
         if item.children:
             yield from _leaves(item.children)
-        elif item.selected:
+        elif item.selected and not item.error and item.kind != "folder":
             yield item
 
 

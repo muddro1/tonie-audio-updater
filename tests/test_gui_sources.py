@@ -113,3 +113,43 @@ def test_totals_tolerates_an_unknown_duration():
     count, seconds = totals([item])
     assert count == 1
     assert seconds == 0.0
+
+
+def test_a_failed_link_is_skipped_but_a_good_source_still_resolves():
+    good = SourceItem(kind="file", value="/music/good.mp3", title="good", selected=True)
+    bad = SourceItem(kind="link", value="https://example.com/private", title="private",
+                      selected=True, error="Could not read: Private video")
+
+    assert resolved_paths([good, bad]) == ["/music/good.mp3"]
+
+    count, seconds = totals([good, bad])
+    assert count == 1
+
+
+def test_a_failed_link_stays_in_the_list_with_its_reason():
+    bad = SourceItem(kind="link", value="https://example.com/private", title="private",
+                      selected=True, error="Could not read: Private video")
+
+    assert [bad][0].error == "Could not read: Private video"
+    assert resolved_paths([bad]) == []
+
+
+def test_an_empty_ticked_folder_contributes_nothing():
+    folder = SourceItem(kind="folder", value="/empty", title="empty", selected=True)
+    folder.children = []
+
+    assert resolved_paths([folder]) == []
+    assert totals([folder]) == (0, 0.0)
+
+
+def test_a_folder_with_children_still_resolves_them():
+    folder = SourceItem(kind="folder", value="/music", title="music")
+    folder.children = [
+        SourceItem(kind="file", value="/music/a.mp3", title="a", duration=10.0,
+                   selected=True),
+        SourceItem(kind="file", value="/music/b.mp3", title="b", duration=20.0,
+                   selected=True),
+    ]
+
+    assert resolved_paths([folder]) == ["/music/a.mp3", "/music/b.mp3"]
+    assert totals([folder]) == (2, 30.0)
