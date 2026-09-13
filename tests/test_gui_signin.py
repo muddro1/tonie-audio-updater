@@ -7,7 +7,7 @@ from PySide6.QtCore import QSettings
 
 from gui import signin
 
-TEST_ORG, TEST_APP = "tonie-test", f"signin-test"
+TEST_ORG, TEST_APP = "tonie-test", "signin-test"
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +39,15 @@ def test_forget_clears_both():
     signin.save("someone@example.com", "hunter2", remember=True)
     signin.forget("someone@example.com")
     assert signin.load_saved() == (None, None)
+
+
+def test_unticking_remember_deletes_a_previously_stored_password():
+    """The regression case: a password was saved, then remember is turned off."""
+    signin.save("someone@example.com", "first", remember=True)
+    assert signin.load_saved() == ("someone@example.com", "first")
+
+    signin.save("someone@example.com", "second", remember=False)
+    assert signin.load_saved() == ("someone@example.com", None)
 
 
 def test_the_dialog_reports_what_was_typed(qtbot):

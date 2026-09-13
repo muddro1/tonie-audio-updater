@@ -3,7 +3,7 @@
 The username is not a secret and lives in QSettings so it can prefill the field. The
 password lives only in the login Keychain, and only when "Remember" is ticked.
 """
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
                                QLabel, QLineEdit, QVBoxLayout)
 
@@ -28,7 +28,9 @@ def load_saved():
 
 def save(username, password, remember):
     """Remember the username always; the password only if asked."""
-    _settings().setValue(USERNAME_KEY, username)
+    settings = _settings()
+    settings.setValue(USERNAME_KEY, username)
+    settings.sync()
     if remember:
         store_password(username, password, service=SERVICE)
     else:
