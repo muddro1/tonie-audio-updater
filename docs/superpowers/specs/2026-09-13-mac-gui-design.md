@@ -294,6 +294,28 @@ The preview therefore reports pre-conversion durations. Where that matters — a
 that will be trimmed, or a file that will be truncated — the confirmation dialog at step
 4 shows the real post-processing numbers before anything is uploaded.
 
+## Tonie identity in the picker
+
+Added after the first implementation pass, once the Tonie checkbox list was visible and
+in front of a real user: two things the API already returns and the picker did not show.
+
+**Each Tonie's own picture.** `CreativeTonie.imageUrl` is a plain, unauthenticated URL to
+the photo of the physical figure - the thing that actually tells "Elephant" apart from
+"Lion" at a glance, better than a name column does. It is fetched once and cached on disk
+under the Tonie's id, so it costs one network round trip ever, not one per launch. A
+missing image, a failed fetch, or no `imageUrl` at all just means no icon for that row -
+never a crash and never a blocked sign-in.
+
+**What is already on the Tonie.** Every `CreativeTonie` carries its current `chapters`,
+which the picker reduced to a bare count. Each row becomes expandable: opening it lists
+the actual chapter titles and durations already on that Tonie, so the choice to update it
+is informed by what is there today, not only by "3 chapters" as a number. A Tonie holding
+nothing gets no expand arrow, since there is nothing to show.
+
+Both are read from data already fetched during sign-in - no new API calls beyond the one
+image fetch per Tonie - and both fail silently toward "no extra detail" rather than toward
+blocking the picker.
+
 ## Credentials
 
 `keychain.py` shells out to `security`, which was verified to write, read back and
