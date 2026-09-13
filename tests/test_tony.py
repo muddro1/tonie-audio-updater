@@ -638,3 +638,43 @@ def test_force_update_overrides_everything(configure):
                                        force_update=True)
     assert needed is True
     assert "orce" in reason
+
+
+# --- small cleanups -------------------------------------------------------
+
+def test_audio_titles_can_go_in_a_set():
+    """Defining __eq__ without __hash__ makes a class unhashable."""
+    assert len({tony.AudioTitle("/a.mp3", "Same"),
+                tony.AudioTitle("/b.mp3", "Same")}) == 1
+
+
+def test_min_silence_duration_is_parsed_as_a_number():
+    a = tony.build_parser().parse_args(["-i", "/tmp", "--min-silence-duration", "3.5"])
+    assert a.min_silence_duration == 3.5
+
+
+def test_a_non_numeric_min_silence_duration_is_rejected_at_parse_time():
+    with pytest.raises(SystemExit):
+        tony.build_parser().parse_args(["-i", "/tmp", "--min-silence-duration", "soon"])
+
+
+def test_end_of_input_exits_cleanly_at_the_menu(configure, monkeypatch):
+    """Piping input used to end in an EOFError traceback."""
+    configure()
+    monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(EOFError()))
+
+    with pytest.raises(SystemExit) as excinfo:
+        tony.display_tonies_menu([FakeTonie("Lion")], {"t1": "Home"},
+                                 _files("One"))
+
+    assert excinfo.value.code == 0
+
+
+def test_end_of_input_exits_cleanly_at_the_confirmation(configure, monkeypatch):
+    configure()
+    monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(EOFError()))
+
+    with pytest.raises(SystemExit) as excinfo:
+        tony.confirm_selection([FakeTonie("Lion")], {"t1": "Home"}, _files("One"))
+
+    assert excinfo.value.code == 0

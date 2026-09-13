@@ -24,7 +24,11 @@ class AudioTitle:
     duration: Optional[float] = None  # Duration in seconds, when known
     
     def __eq__(self, other):
-        return self.title == other.title    
+        return self.title == other.title
+
+    def __hash__(self):
+        # Defining __eq__ alone would set __hash__ to None, making these unhashable
+        return hash(self.title)
 
 # Populated by parse_args(). Module level so every function can read it, but set
 # explicitly rather than at import, which keeps this file importable (and testable)
@@ -72,7 +76,8 @@ Usage: {os.path.basename(__file__)} [options]
                         help="Trim silence at the end of converted audio files")
     parser.add_argument("--silence-threshold", dest="silence_threshold", default="-50dB",
                         help="Silence detection threshold (default: -50dB)")
-    parser.add_argument("--min-silence-duration", dest="min_silence_duration", default="2.0",
+    parser.add_argument("--min-silence-duration", dest="min_silence_duration",
+                        type=float, default=2.0,
                         help="Minimum silence duration to trigger trimming in seconds (default: 2.0)")
     parser.add_argument("--max-duration", dest="max_duration", type=float, default=90.0,
                         help="Maximum minutes a Creative Tonie accepts; a single longer file is truncated to this length (default: 90)")
@@ -234,7 +239,7 @@ def detect_silence_end(audio_path):
             
             # If there's trailing silence that starts before the end and continues to the end
             # (or very close to it), we want to trim from that point
-            if total_duration - last_silence_start >= float(args.min_silence_duration):
+            if total_duration - last_silence_start >= args.min_silence_duration:
                 # Verify this silence continues to near the end
                 if len(silence_ends) < len(silence_starts) or silence_ends[-1] < last_silence_start:
                     # Silence continues to the end
@@ -380,7 +385,7 @@ def get_audio_files(input_path):
                 logging.info(f"Found {len(video_files)} video files to convert")
             
             if args.trim_silence:
-                logging.info(f"Silence trimming enabled (threshold: {args.silence_threshold}, min duration: {args.min_silence_duration}s)")
+                logging.info(f"Silence trimming enabled (threshold: {args.silence_threshold}, min duration: {args.min_silence_duration:g}s)")
             
             # Create temp directory for converted files if not keeping them
             temp_dir = None
@@ -821,7 +826,7 @@ def display_tonies_menu(tonies, tonie_households, audio_files):
             
         except ValueError:
             print("Invalid input. Please enter numbers, ranges, or valid commands.")
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             print("\nExiting...")
             cleanup_converted_files()
             sys.exit(0)
@@ -882,7 +887,7 @@ def confirm_selection(selected_tonies, tonie_households, audio_files, dry_run=Fa
                 return False
             else:
                 print("Please enter 'y' for yes or 'n' for no.")
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             print("\nExiting...")
             cleanup_converted_files()
             sys.exit(0)
