@@ -3,6 +3,10 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
+from PySide6.QtGui import QDropEvent
+from PySide6.QtWidgets import QFileDialog
+
 import tony
 from conftest import requires_ffmpeg
 from gui.app import MainWindow
@@ -16,16 +20,34 @@ class FakeTonie:
         self.chapters = [SimpleNamespace(title=t) for t in chapters]
 
 
-@pytest.fixture
-def window(qtbot, monkeypatch):
+def _window(qtbot, monkeypatch, synchronous):
     monkeypatch.setattr("gui.app.signin.load_saved", lambda: ("me@example.com", "pw"))
-    w = MainWindow()
+    w = MainWindow(synchronous=synchronous)
     qtbot.addWidget(w)
     w.set_tonies(
         [FakeTonie("t1", "Elephant"), FakeTonie("t2", "Lion", chapters=["One"])],
         {"t1": "Home", "t2": "Attic"},
     )
     return w
+
+
+@pytest.fixture
+def window(qtbot, monkeypatch):
+    """Work runs inline, because nothing here spins the event loop a Worker needs."""
+    return _window(qtbot, monkeypatch, synchronous=True)
+
+
+@pytest.fixture
+def threaded_window(qtbot, monkeypatch):
+    """The window as shipped, with its work on a real Worker thread."""
+    return _window(qtbot, monkeypatch, synchronous=False)
+
+
+def _drop(window, mime):
+    """Deliver a drop to the window, the way a drag from Finder or a browser does."""
+    event = QDropEvent(QPointF(1, 1), Qt.CopyAction, mime,
+                       Qt.LeftButton, Qt.NoModifier)
+    window.dropEvent(event)
 
 
 @requires_ffmpeg
@@ -145,4 +167,71 @@ def test_controls_are_disabled_while_running(window, qtbot):
 
     window.set_running(False)
     assert window.add_folder_button.isEnabled() is True
+    assert window.cancel_button.isEnabled() is False
+
+
+@requires_ffmpeg
+def test_several_files_chosen_at_once_are_all_expanded(window, configure, tone_file,
+                                                       tmp_path, monkeypatch):
+    configure()
+    chosen = [str(tone_file(5, "a.mp3")),
+              str(tone_file(5, "b.mp3", frequency=300)),
+              str(tone_file(5, "c.mp3", frequency=600))]
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: (chosen, "")))
+
+    window.choose_files()
+
+    assert [s.title for s in window.sources] == ["a", "b", "c"]
+    assert "3 files" in window.summary_text()
+
+
+def test_dropping_several_links_expands_them_all(window, configure, monkeypatch):
+    configure()
+    monkeypatch.setattr(tony, "probe_url", lambda url: [
+        {"url": url, "title": url.rsplit("/", 1)[-1], "duration": 60.0},
+    ])
+
+    mime = QMimeData()
+    mime.setText("https://example.com/one\nhttps://example.com/two")
+    _drop(window, mime)
+
+    assert [s.title for s in window.sources] == ["one", "two"]
+    assert "2 files" in window.summary_text()
+
+
+@requires_ffmpeg
+def test_dropping_several_files_expands_them_all(window, configure, tone_file):
+    configure()
+    dropped = [tone_file(5, "one.mp3"), tone_file(5, "two.mp3", frequency=300)]
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path)) for path in dropped])
+    _drop(window, mime)
+
+    assert [s.title for s in window.sources] == ["one", "two"]
+    assert "2 files" in window.summary_text()
+
+
+def test_a_source_expands_on_a_real_worker_thread(threaded_window, configure, qtbot,
+                                                  monkeypatch):
+    """The path users actually run: dispatched to a Worker, delivered by the loop."""
+    configure()
+    monkeypatch.setattr(tony, "probe_url", lambda url: [
+        {"url": "https://example.com/1", "title": "One", "duration": 600.0},
+        {"url": "https://example.com/2", "title": "Two", "duration": 600.0},
+    ])
+    window = threaded_window
+
+    window.add_sources(["https://example.com/a", "https://example.com/b"])
+
+    # Locked the moment the work is dispatched, before the loop has run at all
+    assert window.add_folder_button.isEnabled() is False
+    assert window.upload_button.isEnabled() is False
+    assert window.cancel_button.isEnabled() is True
+
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
+
+    assert len(window.sources) == 2
+    assert "4 files" in window.summary_text()
     assert window.cancel_button.isEnabled() is False

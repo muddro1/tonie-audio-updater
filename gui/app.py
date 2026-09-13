@@ -36,6 +36,16 @@ def _upload_job(api, tonies, households, should_cancel):
         tony.cleanup_converted_files()
 
 
+def _expand_all(values):
+    """Expand a whole batch of paths and links in one go.
+
+    Every source chosen or dropped together is expanded by a single Worker run, so
+    the single-flight lock in gui.worker is taken once. Starting one Worker per file
+    would have the lock correctly reject all but the first.
+    """
+    return [sources_model.expand(value) for value in values]
+
+
 def _sign_in_job(username, password):
     """Connect, then list every Creative Tonie on the account."""
     # Imported here so the GUI can be imported without the dependency installed
@@ -49,11 +59,13 @@ def _sign_in_job(username, password):
 class MainWindow(QMainWindow):
     """Sources on the left, Creative Tonies on the right, a log underneath.
 
-    `synchronous` forces expansion and uploading to run inline rather than in a
-    Worker thread. Left as None it decides for itself - see _wants_worker().
+    `synchronous` runs every piece of engine work inline rather than in a Worker
+    thread. It defaults to False - the threaded path is the one users get - and is
+    only turned on by a test that has no running event loop to deliver a queued
+    result.
     """
 
-    def __init__(self, synchronous=None):
+    def __init__(self, synchronous=False):
         super().__init__()
         self.setWindowTitle("Tonie Audio Updater")
         self.resize(720, 640)
@@ -295,16 +307,31 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------- sources
 
     def add_source(self, value):
-        """Expand a path or link and add it to the list.
+        """Expand one path or link and add it to the list."""
+        return self.add_sources([value])
+
+    def add_sources(self, values):
+        """Expand a batch of paths and links, and add them all to the list.
 
         Expansion scans a folder or reads a link's metadata, which is quick but not
-        instant, so it runs through a Worker like every other piece of engine work.
+        instant, so it runs through a Worker like every other piece of engine work -
+        one Worker for the whole batch, since only one may run at a time. The window
+        is locked while it runs, so Upload cannot be pressed against a list that is
+        still filling up.
         """
-        self._start(sources_model.expand, value, on_done=self._source_expanded)
+        values = [value for value in values if value]
+        if not values:
+            return None
 
-    def _source_expanded(self, item):
+        self.set_running(True)
+        started = self._start(_expand_all, values, on_done=self._sources_expanded)
+        if started is None or not self._wants_worker():
+            self.set_running(False)
+        return started
+
+    def _sources_expanded(self, items):
         """Keep what came back - including a link that failed, with its reason."""
-        self.sources.append(item)
+        self.sources.extend(items)
         self.refresh_summary()
 
     def choose_folder(self):
@@ -317,8 +344,7 @@ class MainWindow(QMainWindow):
                               tony.AUDIO_EXTENSIONS + tony.VIDEO_EXTENSIONS)
         paths, _ = QFileDialog.getOpenFileNames(self, "Choose audio or video files", "",
                                                 f"Audio and video ({extensions})")
-        for path in paths:
-            self.add_source(path)
+        self.add_sources(paths)
 
     def choose_link(self):
         url, accepted = QInputDialog.getText(self, "Add a link",
@@ -566,15 +592,13 @@ class MainWindow(QMainWindow):
     def _wants_worker(self):
         """Whether this work should go to a background thread.
 
-        A Worker is only useful when a Qt event loop is running to deliver its
-        signals; without one - no QApplication at all, or the bare one pytest-qt
-        creates without ever calling exec() - a queued result would never arrive. The
-        same Worker, the same callable and the same signal connections are used either
-        way, so only the dispatch differs, never the work.
+        A Worker is only useful when a Qt event loop is running to deliver its queued
+        signals. Callers that have none - a test that never spins the loop - ask for
+        it by constructing the window with synchronous=True; nothing here guesses.
+        Either way the same Worker runs the same callable through the same signal
+        connections, so only the dispatch differs, never the work.
         """
-        if self._synchronous is not None:
-            return not self._synchronous
-        return QApplication.instance() is not None and "pytest" not in sys.modules
+        return not self._synchronous
 
     def _work_finished(self):
         self._worker = None
@@ -692,24 +716,17 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
+        """Everything dropped together is expanded together, as one batch."""
         data = event.mimeData()
-        handled = False
+        values = [url.toLocalFile() if url.isLocalFile() else url.toString()
+                  for url in data.urls()]
 
-        for url in data.urls():
-            if url.isLocalFile():
-                self.add_source(url.toLocalFile())
-            else:
-                self.add_source(url.toString())
-            handled = True
+        if not values and data.hasText():
+            values = [line.strip() for line in data.text().splitlines()
+                      if tony.is_url(line.strip()) or os.path.exists(line.strip())]
 
-        if not handled and data.hasText():
-            for line in data.text().splitlines():
-                candidate = line.strip()
-                if tony.is_url(candidate) or os.path.exists(candidate):
-                    self.add_source(candidate)
-                    handled = True
-
-        if handled:
+        if values:
+            self.add_sources(values)
             event.acceptProposedAction()
 
 
