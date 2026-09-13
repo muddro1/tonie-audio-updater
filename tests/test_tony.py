@@ -305,3 +305,47 @@ def test_get_audio_files_raises_when_the_directory_is_empty(configure, tmp_path)
     configure()
     with pytest.raises(ValueError, match="No audio files"):
         tony.get_audio_files(str(tmp_path))
+
+
+# --- credentials ----------------------------------------------------------
+
+def test_password_is_not_required_on_the_command_line():
+    """It would be visible in `ps` output and shell history."""
+    a = tony.build_parser().parse_args(["-i", "/tmp"])
+    assert a.password is None
+    assert a.username is None
+
+
+def test_credentials_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("TONIE_USERNAME", "env-user")
+    monkeypatch.setenv("TONIE_PASSWORD", "env-pass")
+    a = tony.build_parser().parse_args(["-i", "/tmp"])
+
+    assert tony.resolve_credentials(a) == ("env-user", "env-pass")
+
+
+def test_command_line_credentials_win_over_the_environment(monkeypatch):
+    monkeypatch.setenv("TONIE_USERNAME", "env-user")
+    monkeypatch.setenv("TONIE_PASSWORD", "env-pass")
+    a = tony.build_parser().parse_args(["-i", "/tmp", "-u", "flag-user", "-p", "flag-pass"])
+
+    assert tony.resolve_credentials(a) == ("flag-user", "flag-pass")
+
+
+def test_missing_credentials_are_prompted_for(monkeypatch):
+    monkeypatch.delenv("TONIE_USERNAME", raising=False)
+    monkeypatch.delenv("TONIE_PASSWORD", raising=False)
+    monkeypatch.setattr("builtins.input", lambda _: "typed-user")
+    monkeypatch.setattr(tony.getpass, "getpass", lambda _: "typed-pass")
+    a = tony.build_parser().parse_args(["-i", "/tmp"])
+
+    assert tony.resolve_credentials(a) == ("typed-user", "typed-pass")
+
+
+def test_an_empty_prompted_password_is_an_error(monkeypatch):
+    monkeypatch.delenv("TONIE_PASSWORD", raising=False)
+    monkeypatch.setattr(tony.getpass, "getpass", lambda _: "")
+    a = tony.build_parser().parse_args(["-i", "/tmp", "-u", "user"])
+
+    with pytest.raises(ValueError, match="[Pp]assword"):
+        tony.resolve_credentials(a)

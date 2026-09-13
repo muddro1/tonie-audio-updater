@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import getpass
 import logging
 import os
 import sys
@@ -38,10 +39,13 @@ Usage: {os.path.basename(__file__)} [options]
 """
 
     parser = ArgumentParser(usage=usage)
-    parser.add_argument("-u", "--username", dest="username", required=True, 
-                        help="Tonie account username")
-    parser.add_argument("-p", "--password", dest="password", required=True, 
-                        help="Tonie account password")
+    parser.add_argument("-u", "--username", dest="username",
+                        help="Tonie account username (default: $TONIE_USERNAME, "
+                             "otherwise prompted for)")
+    parser.add_argument("-p", "--password", dest="password",
+                        help="Tonie account password. Passing it here exposes it in "
+                             "`ps` output and your shell history - prefer "
+                             "$TONIE_PASSWORD, or let it be prompted for")
     parser.add_argument("-i", "--input-path", dest="input_path", required=True, 
                         help="Path to directory containing audio files (MP3, WAV, M4A, OGG) and optionally video files")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true",
@@ -76,6 +80,30 @@ def parse_args(argv=None):
     global args
     args = build_parser().parse_args(argv)
     return args
+
+def resolve_credentials(parsed_args):
+    """Work out the username and password to use.
+
+    A password on the command line is readable by anyone who can run `ps`, and is
+    recorded in shell history, so it is no longer required there. Order of preference:
+    the flag, then the environment, then an interactive prompt.
+    """
+    username = parsed_args.username or os.environ.get("TONIE_USERNAME")
+    password = parsed_args.password or os.environ.get("TONIE_PASSWORD")
+
+    if not username:
+        username = input("Tonie account username: ").strip()
+    if not password:
+        password = getpass.getpass("Tonie account password: ")
+
+    if not username:
+        raise ValueError("A username is required. Pass -u, set $TONIE_USERNAME, "
+                         "or enter one when prompted.")
+    if not password:
+        raise ValueError("A password is required. Set $TONIE_PASSWORD, enter one when "
+                         "prompted, or pass -p (which exposes it to `ps`).")
+
+    return username, password
 
 def setup_logging():
     """Send structured logs to stdout"""
@@ -843,12 +871,14 @@ def main(argv=None):
         if not os.path.exists(args.input_path):
             raise FileNotFoundError(f"Input path does not exist: {args.input_path}")
         
+        username, password = resolve_credentials(args)
+
         # Imported here so the module can be imported without the dependency installed
         from tonie_api.api import TonieAPI
 
         # Initialize Tonie API
         print("Connecting to Tonie API...")
-        tonie_api = TonieAPI(args.username, args.password)
+        tonie_api = TonieAPI(username, password)
         
         # Get audio files
         print(f"Scanning for audio files in: {args.input_path}")
