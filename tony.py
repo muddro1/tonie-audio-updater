@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import logging
-import json
 import os
 import sys
 import glob
@@ -12,9 +11,6 @@ from pathlib import Path
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from typing import Optional
-
-from tonie_api.api import TonieAPI
-from tonie_api.models import Config, CreativeTonie, User
 
 @dataclass(eq=False)
 class AudioTitle:
@@ -27,50 +23,64 @@ class AudioTitle:
     def __eq__(self, other):
         return self.title == other.title    
 
-usage = f"""
+# Populated by parse_args(). Module level so every function can read it, but set
+# explicitly rather than at import, which keeps this file importable (and testable)
+# without argv.
+args = None
+
+def build_parser():
+    """Build the argument parser"""
+    usage = f"""
 Tonie Audio Updater - Upload audio files to Creative Tonies
 
 Python {sys.version}
 Usage: {os.path.basename(__file__)} [options]
 """
 
-parser = ArgumentParser(usage=usage)
-parser.add_argument("-u", "--username", dest="username", required=True, 
-                    help="Tonie account username")
-parser.add_argument("-p", "--password", dest="password", required=True, 
-                    help="Tonie account password")
-parser.add_argument("-i", "--input-path", dest="input_path", required=True, 
-                    help="Path to directory containing audio files (MP3, WAV, M4A, OGG) and optionally video files")
-parser.add_argument("--dry-run", dest="dry_run", action="store_true",
-                    help="Show what would be done without actually updating")
-parser.add_argument("--non-interactive", dest="non_interactive", action="store_true",
-                    help="Run in non-interactive mode (updates first tonie)")
-parser.add_argument("--force-update", dest="force_update", action="store_true",
-                    help="Force update even if tonie appears up to date")
-parser.add_argument("--convert-video", dest="convert_video", action="store_true",
-                    help="Convert video files (MKV, MP4, AVI, MOV) to MP3 audio")
-parser.add_argument("--ffmpeg-path", dest="ffmpeg_path", default="ffmpeg",
-                    help="Path to ffmpeg executable (default: ffmpeg)")
-parser.add_argument("--audio-bitrate", dest="audio_bitrate", default="128k",
-                    help="Audio bitrate for video conversion (default: 128k)")
-parser.add_argument("--keep-converted", dest="keep_converted", action="store_true",
-                    help="Keep converted audio files after upload (default: delete temporary files)")
-parser.add_argument("--trim-silence", dest="trim_silence", action="store_true",
-                    help="Trim silence at the end of converted audio files")
-parser.add_argument("--silence-threshold", dest="silence_threshold", default="-50dB",
-                    help="Silence detection threshold (default: -50dB)")
-parser.add_argument("--min-silence-duration", dest="min_silence_duration", default="2.0",
-                    help="Minimum silence duration to trigger trimming in seconds (default: 2.0)")
-parser.add_argument("--max-duration", dest="max_duration", type=float, default=90.0,
-                    help="Maximum minutes a Creative Tonie accepts; a single longer file is truncated to this length (default: 90)")
-parser.add_argument("--no-duration-limit", dest="no_duration_limit", action="store_true",
-                    help="Skip the duration limit check entirely (no truncation, no warning)")
+    parser = ArgumentParser(usage=usage)
+    parser.add_argument("-u", "--username", dest="username", required=True, 
+                        help="Tonie account username")
+    parser.add_argument("-p", "--password", dest="password", required=True, 
+                        help="Tonie account password")
+    parser.add_argument("-i", "--input-path", dest="input_path", required=True, 
+                        help="Path to directory containing audio files (MP3, WAV, M4A, OGG) and optionally video files")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true",
+                        help="Show what would be done without actually updating")
+    parser.add_argument("--non-interactive", dest="non_interactive", action="store_true",
+                        help="Run in non-interactive mode (updates first tonie)")
+    parser.add_argument("--force-update", dest="force_update", action="store_true",
+                        help="Force update even if tonie appears up to date")
+    parser.add_argument("--convert-video", dest="convert_video", action="store_true",
+                        help="Convert video files (MKV, MP4, AVI, MOV) to MP3 audio")
+    parser.add_argument("--ffmpeg-path", dest="ffmpeg_path", default="ffmpeg",
+                        help="Path to ffmpeg executable (default: ffmpeg)")
+    parser.add_argument("--audio-bitrate", dest="audio_bitrate", default="128k",
+                        help="Audio bitrate for video conversion (default: 128k)")
+    parser.add_argument("--keep-converted", dest="keep_converted", action="store_true",
+                        help="Keep converted audio files after upload (default: delete temporary files)")
+    parser.add_argument("--trim-silence", dest="trim_silence", action="store_true",
+                        help="Trim silence at the end of converted audio files")
+    parser.add_argument("--silence-threshold", dest="silence_threshold", default="-50dB",
+                        help="Silence detection threshold (default: -50dB)")
+    parser.add_argument("--min-silence-duration", dest="min_silence_duration", default="2.0",
+                        help="Minimum silence duration to trigger trimming in seconds (default: 2.0)")
+    parser.add_argument("--max-duration", dest="max_duration", type=float, default=90.0,
+                        help="Maximum minutes a Creative Tonie accepts; a single longer file is truncated to this length (default: 90)")
+    parser.add_argument("--no-duration-limit", dest="no_duration_limit", action="store_true",
+                        help="Skip the duration limit check entirely (no truncation, no warning)")
 
-args = parser.parse_args()
+    return parser
 
-# Setup logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, 
-                   format='%(asctime)s | %(levelname)s | %(message)s')
+def parse_args(argv=None):
+    """Parse argv into the module-level args"""
+    global args
+    args = build_parser().parse_args(argv)
+    return args
+
+def setup_logging():
+    """Send structured logs to stdout"""
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+                        format='%(asctime)s | %(levelname)s | %(message)s')
 
 # The Tonie service enforces its duration limit strictly, and stream copying can only
 # cut on a frame boundary. Aim this far under the limit so the result fits.
@@ -824,12 +834,18 @@ def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False)
     
     logging.info(f"{'[DRY RUN] ' if dry_run else ''}Successfully updated '{tonie.name}'")
 
-def main():
+def main(argv=None):
+    parse_args(argv)
+    setup_logging()
+
     try:
         # Validate input path
         if not os.path.exists(args.input_path):
             raise FileNotFoundError(f"Input path does not exist: {args.input_path}")
         
+        # Imported here so the module can be imported without the dependency installed
+        from tonie_api.api import TonieAPI
+
         # Initialize Tonie API
         print("Connecting to Tonie API...")
         tonie_api = TonieAPI(args.username, args.password)
