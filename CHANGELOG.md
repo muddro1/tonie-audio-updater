@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.1] - 2026-09-12
 
 ### Added
 - **90-Minute Duration Limit**
@@ -24,7 +24,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Skipped with a warning rather than failing when FFmpeg is unavailable
 
 ### Changed
+- The duration check is on by default. A single file over 90 minutes that previously
+  uploaded (and was rejected by the Tonie service) is now truncated instead. Pass
+  `--no-duration-limit` for the old behaviour.
 - Temporary file cleanup now handles more than one temporary directory
+
+## [3.0] - 2025-07-26
+
+### Added
+- **Silence Trimming**
+  - Automatically removes trailing silence from converted audio files
+  - Uses FFmpeg's `silencedetect` filter to locate the end of actual audio content
+  - Trims by stream copying, avoiding a re-encode
+  - New `--trim-silence` option to enable it
+  - New `--silence-threshold` option to set the detection threshold (default: -50dB)
+  - New `--min-silence-duration` option to set the minimum silence that triggers
+    trimming (default: 2.0s)
+
+### Changed
+- Video-to-audio conversion now optionally trims trailing silence
+- Trimming status is shown while converting
+- FFmpeg is required rather than optional for video conversion and silence trimming
+- Expanded the README with a silence trimming guide
+
+### Fixed
+- Better error handling around FFmpeg operations
+- Improved temporary file cleanup
+
+## [2.0.1] - 2025-06-24
+
+### Fixed
+- Corrected every command example in the README, which referred to a `tony1.py`
+  that does not exist, to `tony.py`
+
+## [2.0.0] - 2025-06-24
+
+### Added
+- `tony.py`, the Python implementation of the uploader
+
+### Removed
+- `tony.sh`, the shell wrapper it replaces, which called a script that was not
+  part of the repository and passed options the uploader does not accept
+
+## [1.0.1] - 2025-06-24
+
+### Added
+- This changelog
 
 ## [1.0.0] - 2025-06-23
 
