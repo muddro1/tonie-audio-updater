@@ -570,3 +570,71 @@ def test_non_interactive_with_one_tonie_needs_no_name(configure):
     only = FakeTonie("Lion")
 
     assert tony.select_tonies_by_name([only], {}) == [only]
+
+
+# --- needs_update ---------------------------------------------------------
+
+def _files(*titles):
+    return [tony.AudioTitle(f"/{t}.mp3", t) for t in titles]
+
+
+def test_matching_files_and_chapters_need_no_update(configure):
+    configure()
+    needed, reason = tony.needs_update(FakeTonie(chapters=["One", "Two"]),
+                                       _files("One", "Two"))
+    assert needed is False
+    assert reason == "Up to date"
+
+
+def test_a_tonie_with_no_chapters_needs_an_update(configure):
+    configure()
+    assert tony.needs_update(FakeTonie(), _files("One"))[0] is True
+
+
+def test_a_different_file_count_needs_an_update(configure):
+    configure()
+    assert tony.needs_update(FakeTonie(chapters=["One"]), _files("One", "Two"))[0] is True
+
+
+def test_a_different_title_needs_an_update(configure):
+    configure()
+    needed, reason = tony.needs_update(FakeTonie(chapters=["One", "Two"]),
+                                       _files("One", "Three"))
+    assert needed is True
+    assert "Three" in reason
+
+
+def test_reordered_chapters_need_an_update(configure):
+    """Chapter order is playback order, so a reorder is a real change."""
+    configure()
+    needed, reason = tony.needs_update(FakeTonie(chapters=["Two", "One"]),
+                                       _files("One", "Two"))
+    assert needed is True
+    assert "order" in reason.lower()
+
+
+def test_duplicate_titles_are_compared_by_count(configure):
+    """Sorted set comparison treated ['A','A','B'] and ['A','B','B'] as equal."""
+    configure()
+    assert tony.needs_update(FakeTonie(chapters=["A", "A", "B"]),
+                             _files("A", "B", "B"))[0] is True
+
+
+def test_identical_duplicate_titles_need_no_update(configure):
+    configure()
+    assert tony.needs_update(FakeTonie(chapters=["A", "A", "B"]),
+                             _files("A", "A", "B"))[0] is False
+
+
+def test_titles_match_regardless_of_case_and_padding(configure):
+    configure()
+    assert tony.needs_update(FakeTonie(chapters=["  ONE  ", "Two"]),
+                             _files("one", "two"))[0] is False
+
+
+def test_force_update_overrides_everything(configure):
+    configure()
+    needed, reason = tony.needs_update(FakeTonie(chapters=["One"]), _files("One"),
+                                       force_update=True)
+    assert needed is True
+    assert "orce" in reason

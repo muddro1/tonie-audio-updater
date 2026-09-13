@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from collections import Counter
+
 import getpass
 import logging
 import time
@@ -636,36 +638,48 @@ def needs_update(tonie, audio_files, force_update=False):
     if force_update:
         return True, "Force update requested"
     
-    if not hasattr(tonie, 'chapters') or not tonie.chapters:
+    if not getattr(tonie, 'chapters', None):
         return True, "No chapters on tonie"
     
     if len(audio_files) != len(tonie.chapters):
         return True, f"Different number of files ({len(audio_files)} vs {len(tonie.chapters)} chapters)"
     
-    # Normalize titles for comparison
+    # Compare in order: a Tonie plays its chapters in the order they are stored, so a
+    # reordering is a real difference even when the same files are present
     audio_titles = [normalize_title(af.title) for af in audio_files]
-    tonie_titles = [normalize_title(chapter.title) if hasattr(chapter, 'title') else "" for chapter in tonie.chapters]
-    
-    # Sort both lists for comparison (in case order doesn't matter)
-    audio_titles_sorted = sorted(audio_titles)
-    tonie_titles_sorted = sorted(tonie_titles)
+    tonie_titles = [normalize_title(getattr(chapter, 'title', None))
+                    for chapter in tonie.chapters]
     
     # Debug logging
-    logging.debug(f"Audio titles (normalized): {audio_titles_sorted}")
-    logging.debug(f"Tonie titles (normalized): {tonie_titles_sorted}")
+    logging.debug(f"Audio titles (normalized): {audio_titles}")
+    logging.debug(f"Tonie titles (normalized): {tonie_titles}")
     
-    if audio_titles_sorted != tonie_titles_sorted:
-        # Find differences
-        missing_in_tonie = set(audio_titles_sorted) - set(tonie_titles_sorted)
-        extra_in_tonie = set(tonie_titles_sorted) - set(audio_titles_sorted)
-        
-        if missing_in_tonie:
-            return True, f"Missing audio files on tonie: {list(missing_in_tonie)[:3]}"
-        if extra_in_tonie:
-            return True, f"Extra chapters on tonie: {list(extra_in_tonie)[:3]}"
-        return True, "Title mismatch detected"
+    if audio_titles == tonie_titles:
+        return False, "Up to date"
     
-    return False, "Up to date"
+    if sorted(audio_titles) == sorted(tonie_titles):
+        return True, "Same files in a different order"
+    
+    # Report the titles as written rather than as normalized for comparison
+    audio_originals = {normalize_title(af.title): af.title for af in audio_files}
+    tonie_originals = {normalize_title(getattr(chapter, 'title', None)):
+                       getattr(chapter, 'title', 'Untitled')
+                       for chapter in tonie.chapters}
+    
+    # Counters rather than sets, so a title appearing a different number of times counts
+    audio_counts = Counter(audio_titles)
+    tonie_counts = Counter(tonie_titles)
+    
+    missing_in_tonie = audio_counts - tonie_counts
+    extra_in_tonie = tonie_counts - audio_counts
+    
+    if missing_in_tonie:
+        names = [audio_originals.get(t, t) for t in sorted(missing_in_tonie.elements())]
+        return True, f"Missing audio files on tonie: {names[:3]}"
+    if extra_in_tonie:
+        names = [tonie_originals.get(t, t) for t in sorted(extra_in_tonie.elements())]
+        return True, f"Extra chapters on tonie: {names[:3]}"
+    return True, "Title mismatch detected"
 
 def select_tonies_by_name(tonies, tonie_households):
     """Pick the Tonie to update without the menu, for --non-interactive runs.
