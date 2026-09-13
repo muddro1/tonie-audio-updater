@@ -1120,8 +1120,13 @@ def upload_with_retries(tonie_api, tonie, audio_file):
                 time.sleep(delay)
             delay *= 2
 
-def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False):
-    """Update a single Creative Tonie with audio files"""
+def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False,
+                 should_cancel=None):
+    """Update a single Creative Tonie with audio files
+
+    should_cancel is polled before each file; returning True stops the upload and
+    leaves the Tonie incomplete, which the caller is expected to report.
+    """
     household = tonie_households.get(tonie.id, 'Unknown')
     logging.info(f"{'[DRY RUN] ' if dry_run else ''}Updating '{tonie.name}' (Household: {household}) with {len(audio_files)} files")
     
@@ -1139,6 +1144,13 @@ def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False)
         
         # Upload new files
         for i, audio_file in enumerate(audio_files, 1):
+            if should_cancel is not None and should_cancel():
+                logging.warning(f"Cancelled after {i - 1} of {len(audio_files)} files. "
+                                f"'{tonie.name}' is incomplete.")
+                if previous_titles:
+                    logging.warning(f"These chapters were cleared and are no longer on "
+                                    f"'{tonie.name}': {previous_titles}")
+                return
             status = describe_audio_file(audio_file)
             logging.info(f"Uploading ({i}/{len(audio_files)}): {audio_file.title}{status}")
             try:
