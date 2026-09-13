@@ -592,8 +592,14 @@ class MainWindow(QMainWindow):
                      and self.selected_tonies())
         self.upload_button.setEnabled(ready)
 
-    def _start(self, fn, *args, on_done=None):
-        """Run one piece of engine work, reporting its log lines into the pane."""
+    def _start(self, fn, *args, on_done=None, on_failed=None):
+        """Run one piece of engine work, reporting its log lines into the pane.
+
+        on_failed is connected here, alongside on_done, rather than by the caller
+        afterwards: in synchronous mode run() is called before this returns, so a
+        connection made on the worker handed back would be made after the signal it
+        wants has already been emitted, and would silently never fire.
+        """
         if self._is_busy():
             self.show_banner("Something is already running.")
             return None
@@ -603,6 +609,8 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._work_failed)
         if on_done is not None:
             worker.done.connect(on_done)
+        if on_failed is not None:
+            worker.failed.connect(on_failed)
         self._worker = worker
 
         if self._wants_worker():
@@ -647,6 +655,48 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------------- upload
 
+    def confirmation_text(self):
+        """What the confirmation dialog says, built from the window as it stands.
+
+        The dialog itself only displays this, so what the user is asked to agree to can
+        be read - and tested - without a dialog being on screen. It says the same things
+        the CLI's confirm_selection() prints: how much is going where, what each Tonie
+        holds now, what will be cleared, and whether the run is over the limit.
+        """
+        state = self.current_state()
+        selected = self.selected_tonies()
+        count, seconds = sources_model.totals(self.sources)
+
+        titles = self._preview_audio_titles()
+        clearing = sum(len(tony.existing_chapter_titles(t)) for t in selected)
+
+        lines = [
+            f"Upload {count} file{'s' if count != 1 else ''} "
+            f"({tony.format_duration(seconds)}) to "
+            f"{len(selected)} Creative Tonie{'s' if len(selected) != 1 else ''}:",
+            "",
+        ]
+
+        for tonie in selected:
+            household = self.households.get(tonie.id, "Unknown")
+            held = len(tony.existing_chapter_titles(tonie))
+            needed, _ = tony.needs_update(tonie, titles, state.force_update)
+            note = "" if needed else "  — already up to date, will be skipped"
+            lines.append(f"  • {tonie.name} ({household}), {held} chapters{note}")
+
+        lines += ["", f"{clearing} chapters will be cleared and replaced."]
+
+        if self.is_over_limit():
+            over = seconds - state.max_duration * 60
+            lines += [
+                "",
+                f"WARNING: {tony.format_duration(over)} over the "
+                f"{state.max_duration:g} minute limit. {LIMIT_HINT}.",
+                "The upload will likely be rejected.",
+            ]
+
+        return "\n".join(lines)
+
     def start_upload(self):
         """Settle the config on this thread, then do the work on another."""
         tonies = self.selected_tonies()
@@ -663,7 +713,7 @@ class MainWindow(QMainWindow):
             self.sign_in()
             return
 
-        if self.is_over_limit() and not self._confirm_over_limit():
+        if not self._confirm_upload():
             return
 
         apply(state)
@@ -673,24 +723,75 @@ class MainWindow(QMainWindow):
         self.set_running(True)
 
         started = self._start(_upload_job, self._api, tonies, self.households,
-                              self._cancel.is_set, on_done=self._upload_done)
+                              self._cancel.is_set,
+                              on_done=self.on_run_finished,
+                              on_failed=self.on_run_failed)
         if started is None or not self._wants_worker():
             self.set_running(False)
 
-    def _confirm_over_limit(self):
-        answer = QMessageBox.question(
-            self, "Over the limit",
-            f"{self.summary_text()}.\n\n{LIMIT_HINT}. Upload anyway?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        return answer == QMessageBox.Yes
+    def _confirm_upload(self):
+        """The one dialog before anything is touched. Clearing chapters is not
+        undoable, so Cancel is the default button."""
+        answer = QMessageBox.question(self, "Confirm upload", self.confirmation_text(),
+                                      QMessageBox.Ok | QMessageBox.Cancel,
+                                      QMessageBox.Cancel)
+        return answer == QMessageBox.Ok
 
-    def _upload_done(self, outcomes):
+    def summary_of(self, outcomes):
+        """One line per Tonie, worst news first.
+
+        Every outcome is reported, including the ones that went fine: a run that
+        touched five Tonies and failed on one should not read as a failure of all
+        five, nor hide the four that worked.
+        """
+        order = {"failed": 0, "cancelled": 1, "updated": 2, "skipped": 3}
+        lines = []
+        for outcome in sorted(outcomes, key=lambda o: order.get(o.status, 9)):
+            detail = f" — {outcome.detail}" if outcome.detail else ""
+            lines.append(f"{outcome.name}: {outcome.status}{detail}")
+        return "\n".join(lines)
+
+    def on_run_finished(self, outcomes):
+        """The run came back with an outcome for each Tonie.
+
+        The per-Tonie detail goes to the log, which keeps the whole run; the banner
+        carries only the counts, which is what a glance needs.
+
+        Cleanup runs here as well as in _upload_job's finally: the job's finally only
+        covers the part of the run inside it, and this is the one place every finished
+        run passes through. Removing an already-removed file is a no-op, so running it
+        twice costs nothing and missing it once leaves temporary files behind.
+        """
+        tony.cleanup_converted_files()
+        self.set_running(False)
+
         outcomes = outcomes or []
+        if not outcomes:
+            self.show_banner("Nothing to do")
+            return
+
+        for line in self.summary_of(outcomes).splitlines():
+            self.append_line(line)
+
         counts = {}
         for outcome in outcomes:
             counts[outcome.status] = counts.get(outcome.status, 0) + 1
-        self.show_banner(", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
-                         or "Nothing to do")
+        self.show_banner(", ".join(f"{n} {status}"
+                                   for status, n in sorted(counts.items())))
+
+    def on_run_failed(self, message):
+        """The run raised, so there are no outcomes to report - only what went wrong.
+
+        _work_failed has already put the message in the log; the banner is rewritten
+        here so a failed upload does not read like any other failed piece of work. The
+        failure may have come from anywhere in the run, including before _upload_job
+        reached its own finally, so cleanup is run here too.
+        """
+        tony.cleanup_converted_files()
+        self.set_running(False)
+
+        first = (message or "").splitlines()
+        self.show_banner(f"Upload failed: {first[0] if first else 'unknown error'}")
 
     def cancel_upload(self):
         self._cancel.set()
