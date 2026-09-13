@@ -4,6 +4,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 import os
+from types import SimpleNamespace
 
 from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
 from PySide6.QtGui import QDropEvent
@@ -11,15 +12,20 @@ from PySide6.QtWidgets import QFileDialog
 
 import tony
 from conftest import requires_ffmpeg
+from gui import tonie_images
 from gui.app import MainWindow
 from gui.sources import SourceItem
 
 
 class FakeTonie:
-    def __init__(self, tonie_id, name, chapters=()):
-        from types import SimpleNamespace
-        self.id, self.name = tonie_id, name
-        self.chapters = [SimpleNamespace(title=t) for t in chapters]
+    def __init__(self, name, id=None, chapters=()):
+        self.name = name
+        self.id = id if id is not None else name
+        # A str has its own .title() method, so hasattr(c, "title") would wrongly
+        # call a plain string "already chapter-shaped" - check isinstance instead.
+        self.chapters = [SimpleNamespace(title=c) if isinstance(c, str) else c
+                         for c in chapters]
+        self.imageUrl = None
 
 
 def _window(qtbot, monkeypatch, synchronous):
@@ -27,7 +33,7 @@ def _window(qtbot, monkeypatch, synchronous):
     w = MainWindow(synchronous=synchronous)
     qtbot.addWidget(w)
     w.set_tonies(
-        [FakeTonie("t1", "Elephant"), FakeTonie("t2", "Lion", chapters=["One"])],
+        [FakeTonie("Elephant", id="t1"), FakeTonie("Lion", id="t2", chapters=["One"])],
         {"t1": "Home", "t2": "Attic"},
     )
     return w
@@ -279,3 +285,99 @@ def test_one_unreadable_file_does_not_sink_the_rest_of_the_batch(threaded_window
     assert [s.error for s in window.sources] == [None, "Unreadable file", None]
     # The bad one is shown but contributes nothing to the upload
     assert "2 files" in window.summary_text()
+
+
+def _chapter(title, seconds):
+    return SimpleNamespace(title=title, seconds=seconds)
+
+
+def test_a_tonie_with_chapters_can_be_expanded_to_show_them(window, configure,
+                                                            monkeypatch):
+    configure()
+    monkeypatch.setattr(tonie_images, "fetch_all", lambda tonies, **kw: {})
+    tonie = FakeTonie("Elephant", chapters=["placeholder"])
+    tonie.chapters = [_chapter("Bedtime Story", 724.0), _chapter("Moon Song", 511.0)]
+
+    window.set_tonies([tonie], {})
+
+    row = window._tonie_rows()[0]
+    assert row.childCount() == 2
+    assert row.child(0).text(0) == "1. Bedtime Story"
+    assert row.child(1).text(0) == "2. Moon Song"
+
+
+def test_chapter_rows_show_their_duration(window, configure, monkeypatch):
+    configure()
+    monkeypatch.setattr(tonie_images, "fetch_all", lambda tonies, **kw: {})
+    tonie = FakeTonie("Elephant")
+    tonie.chapters = [_chapter("Bedtime Story", 724.0)]
+
+    window.set_tonies([tonie], {})
+
+    assert window._tonie_rows()[0].child(0).text(1) == tony.format_duration(724.0)
+
+
+def test_a_tonie_with_no_chapters_has_no_children(window, configure, monkeypatch):
+    configure()
+    monkeypatch.setattr(tonie_images, "fetch_all", lambda tonies, **kw: {})
+    tonie = FakeTonie("Elephant")
+    tonie.chapters = []
+
+    window.set_tonies([tonie], {})
+
+    assert window._tonie_rows()[0].childCount() == 0
+
+
+def test_signing_in_sets_an_icon_when_an_image_is_cached(window, configure, monkeypatch,
+                                                         tmp_path):
+    configure()
+    image_path = tmp_path / "t1.image"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01"
+        b"\x01\x01\x00\x1b\xb6\xee\x05\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    tonie = FakeTonie("Elephant")
+    tonie.id = "t1"
+
+    window.set_tonies([tonie], {}, image_paths={"t1": image_path})
+
+    assert not window._tonie_rows()[0].icon(0).isNull()
+
+
+def test_a_tonie_with_no_cached_image_gets_no_icon(window, configure):
+    configure()
+    tonie = FakeTonie("Elephant")
+    tonie.id = "t1"
+
+    window.set_tonies([tonie], {}, image_paths={"t1": None})
+
+    assert window._tonie_rows()[0].icon(0).isNull()
+
+
+def test_sign_in_fetches_images_for_every_tonie(window, configure, monkeypatch):
+    """The end-to-end path: signing in populates icons via fetch_all, not a stub.
+
+    _sign_in_job itself is left in place - it is the one place that calls
+    tonie_images.fetch_all - and only its two network-reaching dependencies
+    (TonieAPI's login and tony.get_all_creative_tonies) are stubbed out. Replacing
+    _sign_in_job wholesale, as a first draft of this test did, would bypass the very
+    call this test exists to check.
+    """
+    pytest.importorskip("tonie_api")
+    configure()
+    seen = {}
+
+    def fake_fetch_all(tonies, **kwargs):
+        seen["tonies"] = tonies
+        return {t.id: None for t in tonies}
+
+    monkeypatch.setattr(tonie_images, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr("tonie_api.api.TonieAPI", lambda username, password: object())
+    monkeypatch.setattr(tony, "get_all_creative_tonies",
+                        lambda api: ([FakeTonie("Elephant")], {}))
+
+    window._username, window._password = "me@example.com", "pw"
+    window.refresh_tonies()
+
+    assert "tonies" in seen

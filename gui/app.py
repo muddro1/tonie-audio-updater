@@ -9,6 +9,7 @@ import threading
 from types import SimpleNamespace
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMainWindow,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QVBoxLayout, QWidget)
 
 import tony
-from gui import run, signin, sources as sources_model
+from gui import run, signin, sources as sources_model, tonie_images
 from gui.state import GuiState, apply
 from gui.worker import Worker
 
@@ -72,13 +73,21 @@ def _failed_source(value, reason):
 
 
 def _sign_in_job(username, password):
-    """Connect, then list every Creative Tonie on the account."""
+    """Connect, list every Creative Tonie on the account, and warm the image cache.
+
+    The image fetch happens here, in the same background job as signing in, rather than
+    as a second dispatch afterward - a second _start() call made from inside this job's
+    own on_done callback would race the single-flight lock, since the underlying QThread
+    is not guaranteed to have reported itself finished by the moment the done signal is
+    delivered. One job, one Worker, no race.
+    """
     # Imported here so the GUI can be imported without the dependency installed
     from tonie_api.api import TonieAPI
 
     api = TonieAPI(username, password)
     tonies, households = tony.get_all_creative_tonies(api)
-    return api, tonies, households
+    image_paths = tonie_images.fetch_all(tonies)
+    return api, tonies, households, image_paths
 
 
 class MainWindow(QMainWindow):
@@ -482,11 +491,14 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------------- tonies
 
-    def set_tonies(self, tonies, households):
+    def set_tonies(self, tonies, households, image_paths=None):
         """Replace the Tonie list, keeping whatever was ticked and is still there."""
+        image_paths = image_paths or {}
         ticked = {t.id for t in self.selected_tonies()}
         self.tonies = list(tonies)
         self.households = dict(households)
+
+        self.tonie_tree.setRootIsDecorated(True)
 
         previous = self.tonie_tree.blockSignals(True)
         try:
@@ -500,6 +512,21 @@ class MainWindow(QMainWindow):
                 row.setData(0, Qt.UserRole, tonie)
                 row.setFlags(row.flags() | Qt.ItemIsUserCheckable)
                 row.setCheckState(0, Qt.Checked if tonie.id in ticked else Qt.Unchecked)
+
+                image_path = image_paths.get(tonie.id)
+                if image_path is not None:
+                    icon = QIcon(str(image_path))
+                    if not icon.isNull():
+                        row.setIcon(0, icon)
+
+                for i, chapter in enumerate(getattr(tonie, "chapters", None) or [], 1):
+                    title = getattr(chapter, "title", "Untitled")
+                    seconds = getattr(chapter, "seconds", None)
+                    duration = tony.format_duration(seconds) if seconds is not None else ""
+                    child = QTreeWidgetItem([f"{i}. {title}", duration])
+                    child.setFlags(Qt.ItemIsEnabled)
+                    row.addChild(child)
+
                 self.tonie_tree.addTopLevelItem(row)
         finally:
             self.tonie_tree.blockSignals(previous)
@@ -892,8 +919,8 @@ class MainWindow(QMainWindow):
             self.set_running(False)
 
     def _signed_in(self, result):
-        self._api, tonies, households = result
-        self.set_tonies(tonies, households)
+        self._api, tonies, households, image_paths = result
+        self.set_tonies(tonies, households, image_paths)
         self.account_button.setText(f"Signed in as {self._username}")
 
     # ----------------------------------------------------------------- drag/drop
