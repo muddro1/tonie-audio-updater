@@ -42,8 +42,32 @@ def _expand_all(values):
     Every source chosen or dropped together is expanded by a single Worker run, so
     the single-flight lock in gui.worker is taken once. Starting one Worker per file
     would have the lock correctly reject all but the first.
+
+    Each value is guarded separately. gui.sources already turns a link that will not
+    probe into an item carrying its reason, but a local file or folder can still
+    raise, and sharing one run must not mean sharing one failure: a single unreadable
+    file would otherwise take the rest of the batch down with it. A failure here
+    becomes an item of the same shape a bad link produces, so every failed source -
+    whatever its kind - stays in the list and shows why.
     """
-    return [sources_model.expand(value) for value in values]
+    items = []
+    for value in values:
+        try:
+            items.append(sources_model.expand(value))
+        except Exception as e:
+            items.append(_failed_source(value, str(e)))
+    return items
+
+
+def _failed_source(value, reason):
+    """A source that could not be expanded, in the shape gui.sources uses for one."""
+    if tony.is_url(value):
+        return sources_model.SourceItem(kind="link", value=value, title=value,
+                                        error=reason)
+    name = os.path.basename(value.rstrip(os.sep)) or value
+    return sources_model.SourceItem(kind="file", value=value,
+                                    title=os.path.splitext(name)[0] or value,
+                                    error=reason)
 
 
 def _sign_in_job(username, password):

@@ -3,6 +3,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+import os
+
 from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
 from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QFileDialog
@@ -171,43 +173,57 @@ def test_controls_are_disabled_while_running(window, qtbot):
 
 
 @requires_ffmpeg
-def test_several_files_chosen_at_once_are_all_expanded(window, configure, tone_file,
-                                                       tmp_path, monkeypatch):
+def test_several_files_chosen_at_once_are_all_expanded(threaded_window, configure,
+                                                       tone_file, qtbot, monkeypatch):
+    """Threaded, because only a real Worker can be refused by the single-flight lock.
+
+    Run inline, one-Worker-per-file would still complete every file in turn - each
+    run() returns before the next begins - so this could not tell a batch from the
+    bug it replaced.
+    """
     configure()
     chosen = [str(tone_file(5, "a.mp3")),
               str(tone_file(5, "b.mp3", frequency=300)),
               str(tone_file(5, "c.mp3", frequency=600))]
     monkeypatch.setattr(QFileDialog, "getOpenFileNames",
                         staticmethod(lambda *a, **k: (chosen, "")))
+    window = threaded_window
 
     window.choose_files()
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
 
     assert [s.title for s in window.sources] == ["a", "b", "c"]
     assert "3 files" in window.summary_text()
 
 
-def test_dropping_several_links_expands_them_all(window, configure, monkeypatch):
+def test_dropping_several_links_expands_them_all(threaded_window, configure, qtbot,
+                                                 monkeypatch):
     configure()
     monkeypatch.setattr(tony, "probe_url", lambda url: [
         {"url": url, "title": url.rsplit("/", 1)[-1], "duration": 60.0},
     ])
+    window = threaded_window
 
     mime = QMimeData()
     mime.setText("https://example.com/one\nhttps://example.com/two")
     _drop(window, mime)
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
 
     assert [s.title for s in window.sources] == ["one", "two"]
     assert "2 files" in window.summary_text()
 
 
 @requires_ffmpeg
-def test_dropping_several_files_expands_them_all(window, configure, tone_file):
+def test_dropping_several_files_expands_them_all(threaded_window, configure, tone_file,
+                                                 qtbot):
     configure()
     dropped = [tone_file(5, "one.mp3"), tone_file(5, "two.mp3", frequency=300)]
+    window = threaded_window
 
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(path)) for path in dropped])
     _drop(window, mime)
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
 
     assert [s.title for s in window.sources] == ["one", "two"]
     assert "2 files" in window.summary_text()
@@ -235,3 +251,31 @@ def test_a_source_expands_on_a_real_worker_thread(threaded_window, configure, qt
     assert len(window.sources) == 2
     assert "4 files" in window.summary_text()
     assert window.cancel_button.isEnabled() is False
+
+
+def test_one_unreadable_file_does_not_sink_the_rest_of_the_batch(threaded_window,
+                                                                 configure, qtbot,
+                                                                 monkeypatch, tmp_path):
+    """A batch shares one Worker; it must not share one failure."""
+    configure()
+    paths = []
+    for name in ("a.mp3", "bad.mp3", "c.mp3"):
+        path = tmp_path / name
+        path.write_bytes(b"")
+        paths.append(str(path))
+
+    def duration(path):
+        if os.path.basename(path) == "bad.mp3":
+            raise RuntimeError("Unreadable file")
+        return 10.0
+
+    monkeypatch.setattr(tony, "get_audio_duration", duration)
+    window = threaded_window
+
+    window.add_sources(paths)
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
+
+    assert [s.title for s in window.sources] == ["a", "bad", "c"]
+    assert [s.error for s in window.sources] == [None, "Unreadable file", None]
+    # The bad one is shown but contributes nothing to the upload
+    assert "2 files" in window.summary_text()
