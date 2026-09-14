@@ -65,3 +65,59 @@ def test_reproduces_the_actual_bug_and_confirms_the_fix(tmp_path, monkeypatch):
     fixed = augment_path(current=restricted, candidates=[str(fake_bin)])
     monkeypatch.setenv("PATH", fixed)
     assert shutil.which("ffmpeg") == str(fake_ffmpeg)  # found once augmented
+
+
+# ------------------------------------------------------- the entry point itself
+
+def test_main_builds_a_visible_window_and_asks_for_credentials(qapp, monkeypatch):
+    """gui.app.main() end to end, which nothing else in the suite runs.
+
+    Two bugs on this branch - the CLI rejecting every link, and a fresh window unable
+    to read a file - survived a passing suite because the entry point itself was never
+    called. QApplication is stubbed (pytest-qt already owns the real singleton, and a
+    second one would refuse to be built); everything else is the real thing.
+    """
+    import pytest
+
+    pytest.importorskip("PySide6")
+
+    import tony
+    from gui import app as gui_app
+
+    class StubApp:
+        def __init__(self, argv):
+            self.argv = argv
+
+        def setApplicationName(self, name):
+            self.name = name
+
+        def exec(self):
+            return 0
+
+    opened = []
+
+    class FakeSignInDialog:
+        def __init__(self, parent=None, username="", message=None):
+            opened.append(message)
+
+        def exec(self):
+            return 0          # the person closed the sheet without signing in
+
+    monkeypatch.setattr(gui_app, "QApplication", StubApp)
+    monkeypatch.setattr("gui.app.signin.load_saved", lambda: (None, None))
+    monkeypatch.setattr("gui.app.signin.SignInDialog", FakeSignInDialog)
+    monkeypatch.setattr(tony, "args", None)
+
+    assert gui_app.main() == 0
+    assert opened == [None]
+
+    # Windows other tests built are still alive but were never shown, so the one
+    # main() put on screen is the one that is visible.
+    shown = [w for w in qapp.topLevelWidgets()
+             if isinstance(w, gui_app.MainWindow) and w.isVisible()]
+    try:
+        assert len(shown) == 1
+    finally:
+        for window in shown:
+            window.close()
+            window.deleteLater()
