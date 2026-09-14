@@ -4,6 +4,10 @@
 
 PySide6>=6.11
 
+# gui/tonie_images.py fetches each Tonie's picture with requests. It arrives anyway as
+# one of tonie-api's own dependencies, but a direct import is declared directly.
+requests>=2.31
+
 # The GUI talks to the Tonie service the same way the CLI does - see requirements.txt,
 # which this file does not replace. tonie-api is listed there rather than duplicated
 # here so there is one place declaring the version.

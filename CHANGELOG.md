@@ -23,8 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   playlist, each entry becoming a chapter.
 - `--ytdlp-path` sets the yt-dlp executable to use for links (default: yt-dlp),
   mirroring `--ffmpeg-path`.
+- The GUI finds FFmpeg and yt-dlp installed by Homebrew or MacPorts even when it is
+  launched from Finder, which passes none of a shell's PATH - previously the app had
+  to be started from a terminal for them to be found.
+- Sign Out, beside the account button once signed in, removes the Keychain entry and
+  the remembered username and empties the Creative Tonie list.
 
 ### Changed
+- `--keep-converted` writes a link's downloaded audio to `~/Downloads` rather than the
+  working directory, which is `/` - and read-only - for an app launched from Finder.
+- The GUI converts video sources whether or not "Convert video" is ticked: it lists
+  video files as uploadable, so it asks the engine for the conversion that makes the
+  file count it shows true.
 - `update_tonie` accepts an optional `should_cancel` keyword, polled between files so
   a caller - the GUI - can stop an upload in progress. The CLI's behavior is
   unchanged when it is not passed.

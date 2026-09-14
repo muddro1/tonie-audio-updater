@@ -11,9 +11,13 @@
 # appears below.
 import os
 
+# SPECPATH is the directory holding this spec file, which PyInstaller defines however
+# it was invoked - so the build does not depend on being started from inside build/.
+PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
+
 a = Analysis(
-    ["../gui/__main__.py"],
-    pathex=[os.path.abspath("..")],
+    [os.path.join(PROJECT_ROOT, "gui", "__main__.py")],
+    pathex=[PROJECT_ROOT],
     binaries=[],
     datas=[],
     hiddenimports=["tony"],
@@ -42,7 +46,7 @@ app = BUNDLE(
     name="Tonie Audio Updater.app",
     bundle_identifier="com.muddro1.tonie-audio-updater",
     info_plist={
-        "CFBundleShortVersionString": "5.0",
+        "CFBundleShortVersionString": "4.1",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "13.0",
     },

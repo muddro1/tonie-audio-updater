@@ -405,3 +405,172 @@ def test_cancelling_stops_before_the_next_tonie(threaded_window, qtbot, monkeypa
     assert "Elephant: updated" in log
     assert "Lion: cancelled" in log
     assert window.banner_label.text() == "1 cancelled, 1 updated"
+
+
+# ------------------------------------------ work refused while something is running
+
+def _blocking_update(monkeypatch):
+    """Hold the upload open on its first Tonie until the test lets it go."""
+    started, release = threading.Event(), threading.Event()
+
+    def fake_update(api, tonie, households, audio_files, dry_run=False,
+                    should_cancel=None):
+        started.set()
+        release.wait(10)
+
+    monkeypatch.setattr(tony, "update_tonie", fake_update)
+    return started, release
+
+
+def test_a_drop_during_a_run_does_not_unlock_the_window(threaded_window, qtbot,
+                                                        monkeypatch, tmp_path):
+    """A drop lands on the window, which set_running() never disables.
+
+    The single-flight lock always refused the work; what it could not stop was the
+    set_running(False) that followed the refusal, switching Cancel off and hiding the
+    progress bar while the upload was still running.
+    """
+    window = threaded_window
+    started, release = _blocking_update(monkeypatch)
+    _dialog(monkeypatch, StubDialog.Ok)
+    _real_source(window, tmp_path)
+    window._api = object()
+    window.check_tonie("Elephant", True)
+
+    window.start_upload()
+    qtbot.waitUntil(started.is_set, timeout=10000)
+
+    other = tmp_path / "dropped.mp3"
+    other.write_bytes(b"")
+    window.add_sources([str(other)])
+
+    assert window.cancel_button.isEnabled() is True
+    assert window.progress.isHidden() is False
+    assert window.add_folder_button.isEnabled() is False
+    assert "already running" in window.banner_label.text()
+    assert len(window.sources) == 1          # nothing was expanded into the list
+
+    release.set()
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
+    assert window.cancel_button.isEnabled() is False
+
+
+def test_a_second_upload_during_a_run_is_refused(threaded_window, qtbot, monkeypatch,
+                                                 tmp_path):
+    window = threaded_window
+    started, release = _blocking_update(monkeypatch)
+    dialog = _dialog(monkeypatch, StubDialog.Ok)
+    _real_source(window, tmp_path)
+    window._api = object()
+    window.check_tonie("Elephant", True)
+
+    window.start_upload()
+    qtbot.waitUntil(started.is_set, timeout=10000)
+    asked_once = len(dialog.asked)
+
+    window.start_upload()
+
+    assert len(dialog.asked) == asked_once   # not even asked a second time
+    assert window.cancel_button.isEnabled() is True
+
+    release.set()
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
+
+
+# ------------------------------------------------------- confirming a cancellation
+
+class CancelStub(StubDialog):
+    """Ok to the upload confirmation; a chosen answer to the cancel confirmation."""
+
+    def __init__(self, cancel_answer):
+        super().__init__(QMessageBox.Ok)
+        self._cancel_answer = cancel_answer
+        self.cancel_asked = []
+
+    def question(self, parent, title, text, *args, **kwargs):
+        if "Stop the upload" in title:
+            self.cancel_asked.append(text)
+            return self._cancel_answer
+        return super().question(parent, title, text, *args, **kwargs)
+
+
+def _cancel_dialog(monkeypatch, answer):
+    stub = CancelStub(answer)
+    monkeypatch.setattr(gui_app, "QMessageBox", stub)
+    return stub
+
+
+def _running_upload(window, qtbot, monkeypatch, tmp_path, answer):
+    started, release = _blocking_update(monkeypatch)
+    dialog = _cancel_dialog(monkeypatch, answer)
+    _real_source(window, tmp_path)
+    window._api = object()
+    window.check_tonie("Elephant", True)
+    window.check_tonie("Lion", True)
+
+    window.start_upload()
+    qtbot.waitUntil(started.is_set, timeout=10000)
+    return dialog, release
+
+
+def test_cancelling_asks_first_and_names_the_chapters(threaded_window, qtbot,
+                                                      monkeypatch, tmp_path):
+    window = threaded_window
+    dialog, release = _running_upload(window, qtbot, monkeypatch, tmp_path,
+                                      CancelStub.Cancel)
+
+    window.cancel_upload()
+
+    assert len(dialog.cancel_asked) == 1
+    asked = dialog.cancel_asked[0]
+    assert "incomplete" in asked.lower()
+    assert "Old A" in asked and "Old B" in asked
+
+    release.set()
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
+
+
+def test_answering_no_leaves_the_run_going(threaded_window, qtbot, monkeypatch,
+                                           tmp_path):
+    window = threaded_window
+    dialog, release = _running_upload(window, qtbot, monkeypatch, tmp_path,
+                                      CancelStub.Cancel)
+
+    window.cancel_upload()
+
+    assert window._cancel.is_set() is False
+    assert "Cancelling" not in window.log.toPlainText()
+
+    release.set()
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
+
+    log = window.log.toPlainText()
+    assert "Elephant: updated" in log
+    assert "Lion: updated" in log        # the second Tonie was not skipped
+
+
+def test_answering_yes_cancels_as_before(threaded_window, qtbot, monkeypatch,
+                                         tmp_path):
+    window = threaded_window
+    dialog, release = _running_upload(window, qtbot, monkeypatch, tmp_path,
+                                      CancelStub.Ok)
+
+    window.cancel_upload()
+
+    assert window._cancel.is_set() is True
+    release.set()
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
+
+    log = window.log.toPlainText()
+    assert "Elephant: updated" in log
+    assert "Lion: cancelled" in log
+
+
+def test_nothing_is_asked_when_no_run_is_in_flight(window, monkeypatch):
+    """Cancel with nothing running is a no-op, not a question."""
+    dialog = _cancel_dialog(monkeypatch, CancelStub.Cancel)
+
+    window.cancel_upload()
+
+    assert dialog.cancel_asked == []
+    assert "Cancelling" in window.log.toPlainText()

@@ -259,3 +259,62 @@ def test_a_url_without_ytdlp_is_a_clear_error(configure):
 
     with pytest.raises(FileNotFoundError, match="yt-dlp"):
         tony.get_audio_files(["https://example.com/watch?v=abc"])
+
+
+# ----------------------------------------------------- where a kept download lands
+
+def test_a_kept_download_does_not_go_to_the_working_directory(configure, monkeypatch,
+                                                              tmp_path):
+    """A Finder-launched app's cwd is "/", which is read-only.
+
+    The download directory is read from the -o argument yt-dlp was actually given,
+    rather than from the helper alone, so this covers the choice get_audio_files()
+    makes as well as the default itself.
+    """
+    home = tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    monkeypatch.setattr(tony.os.path, "expanduser", lambda path: str(home))
+
+    configure("--no-duration-limit", "--keep-converted")
+    _fake_download(monkeypatch, tmp_path, ["Kept Story"])
+
+    files = tony.get_audio_files(["https://example.com/watch?v=abc"])
+    used = os.path.dirname(files[0].filepath)
+
+    assert used != os.getcwd()
+    assert used == str(home / "Downloads")
+
+
+def test_the_default_download_dir_is_the_users_downloads(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    monkeypatch.setattr(tony.os.path, "expanduser", lambda path: str(home))
+
+    assert tony.default_download_dir() == str(home / "Downloads")
+
+
+def test_an_unusable_downloads_folder_falls_back_to_a_temp_dir(monkeypatch, tmp_path):
+    """No Downloads folder must not take the whole run down with it."""
+    home = tmp_path / "bare-home"
+    home.mkdir()
+    monkeypatch.setattr(tony.os.path, "expanduser", lambda path: str(home))
+
+    chosen = tony.default_download_dir()
+
+    assert chosen != os.getcwd()
+    assert os.path.isdir(chosen)
+    assert "tonie_download_" in chosen
+
+
+def test_a_temporary_download_dir_is_still_used_without_keep_converted(configure,
+                                                                      monkeypatch,
+                                                                      tmp_path):
+    monkeypatch.setattr(tony.os.path, "expanduser",
+                        lambda path: pytest.fail("~ must not be used for a temp run"))
+
+    configure("--no-duration-limit")
+    _fake_download(monkeypatch, tmp_path, ["Temp Story"])
+
+    files = tony.get_audio_files(["https://example.com/watch?v=abc"])
+
+    assert "tonie_download_" in os.path.dirname(files[0].filepath)

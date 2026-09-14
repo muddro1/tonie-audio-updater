@@ -89,8 +89,21 @@ def _expand_link(url):
     return item
 
 
-def _leaves(items):
-    """Yield only real, uploadable leaves.
+def _dedup_key(value):
+    """What makes two sources the same one, the way the engine decides it.
+
+    collect_input_files() dedupes local paths by os.path.realpath - so a file named
+    directly and the same file inside a folder also added are one upload - and URLs
+    by the string itself. The preview has to agree, or the confirmation dialog counts
+    files that will never be uploaded.
+    """
+    if tony.is_url(value):
+        return value
+    return os.path.realpath(value)
+
+
+def _leaves(items, seen=None):
+    """Yield only real, uploadable leaves, each one once.
 
     A container is never itself a leaf, even when empty: an empty folder holds no
     files, so it must contribute nothing rather than be mistaken for one. A link that
@@ -98,11 +111,21 @@ def _leaves(items):
     its error, but it is not a leaf either: it has no real media behind it, so it must
     not reach resolved_paths or be counted in totals - one bad link must not sink the
     run.
+
+    Duplicates are dropped here rather than in resolved_paths so that totals() - which
+    walks the same leaves to count files and seconds - cannot disagree with the list
+    actually handed to the engine.
     """
+    if seen is None:
+        seen = set()
     for item in items:
         if item.children:
-            yield from _leaves(item.children)
+            yield from _leaves(item.children, seen)
         elif item.selected and not item.error and not item.is_container:
+            key = _dedup_key(item.value)
+            if key in seen:
+                continue
+            seen.add(key)
             yield item
 
 

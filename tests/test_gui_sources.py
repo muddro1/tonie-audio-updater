@@ -167,3 +167,73 @@ def test_a_link_that_probes_to_nothing_gets_an_error(configure, monkeypatch):
     count, seconds = totals([item])
     assert count == 0
     assert seconds == 0.0
+
+
+# --------------------------------------------------------------- duplicate sources
+
+def test_the_same_file_added_twice_resolves_once(configure, tmp_path):
+    """The engine dedupes by realpath, so the preview must too - or the confirmation
+    dialog promises a file count the upload will not honor."""
+    path = tmp_path / "once.mp3"
+    path.write_bytes(b"")
+    configure()
+
+    first = SourceItem(kind="file", value=str(path), title="once", duration=10.0)
+    second = SourceItem(kind="file", value=str(path), title="once", duration=10.0)
+
+    assert resolved_paths([first, second]) == [str(path)]
+    assert totals([first, second]) == (1, 10.0)
+
+
+def test_a_file_named_beside_the_folder_holding_it_resolves_once(configure, tmp_path):
+    path = tmp_path / "inside.mp3"
+    path.write_bytes(b"")
+    configure()
+
+    folder = SourceItem(kind="folder", value=str(tmp_path), title=tmp_path.name)
+    folder.children = [SourceItem(kind="file", value=str(path), title="inside",
+                                  duration=10.0)]
+    loose = SourceItem(kind="file", value=str(path), title="inside", duration=10.0)
+
+    assert resolved_paths([folder, loose]) == [str(path)]
+    assert totals([folder, loose]) == (1, 10.0)
+
+
+def test_two_paths_to_the_same_file_resolve_once(configure, tmp_path):
+    """Two spellings of one file - the engine resolves both with realpath."""
+    path = tmp_path / "once.mp3"
+    path.write_bytes(b"")
+    indirect = tmp_path / "sub" / ".." / "once.mp3"
+    (tmp_path / "sub").mkdir()
+    configure()
+
+    first = SourceItem(kind="file", value=str(path), title="once", duration=10.0)
+    second = SourceItem(kind="file", value=str(indirect), title="once", duration=10.0)
+
+    assert resolved_paths([first, second]) == [str(path)]
+    assert totals([first, second]) == (1, 10.0)
+
+
+def test_the_same_link_added_twice_resolves_once(configure):
+    """A URL is deduped by the address itself, the way collect_input_files does it -
+    realpath would mangle it into a path under the working directory."""
+    configure()
+    first = SourceItem(kind="link", value="https://example.com/1", title="One",
+                       duration=60.0)
+    second = SourceItem(kind="link", value="https://example.com/1", title="One",
+                        duration=60.0)
+
+    assert resolved_paths([first, second]) == ["https://example.com/1"]
+    assert totals([first, second]) == (1, 60.0)
+
+
+def test_different_links_are_both_kept(configure):
+    configure()
+    first = SourceItem(kind="link", value="https://example.com/1", title="One",
+                       duration=60.0)
+    second = SourceItem(kind="link", value="https://example.com/2", title="Two",
+                        duration=90.0)
+
+    assert resolved_paths([first, second]) == ["https://example.com/1",
+                                               "https://example.com/2"]
+    assert totals([first, second]) == (2, 150.0)

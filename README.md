@@ -150,7 +150,7 @@ python tony.py -i /path/to/files --no-duration-limit
 |--------|-------------|
 | `-u, --username` | Tonie account username (default: `$TONIE_USERNAME`, otherwise prompted for) |
 | `-p, --password` | Tonie account password. Exposes it in `ps` output and shell history — prefer `$TONIE_PASSWORD` |
-| `-i, --input-path` | One or more files or directories containing audio/video, and/or links to a video or a playlist (required). Repeat the flag or list several after it |
+| `-i, --input-path` | One or more files or directories containing audio/video, and/or links to a video or a playlist (required). List them all after a single `-i`, separated by spaces (`-i a b c`) - repeating the flag keeps only the last one |
 | `--dry-run` | Show what would be done without actually updating |
 | `--non-interactive` | Run without the selection menu. Needs `--tonie` unless the account holds exactly one Creative Tonie |
 | `--tonie` | Name of the Creative Tonie to update, for non-interactive runs (case-insensitive) |
@@ -159,7 +159,7 @@ python tony.py -i /path/to/files --no-duration-limit
 | `--ffmpeg-path` | Path to ffmpeg executable (default: ffmpeg) |
 | `--ytdlp-path` | Path to the yt-dlp executable, used to resolve and download links (default: yt-dlp) |
 | `--audio-bitrate` | Audio bitrate for video conversion (default: 128k) |
-| `--keep-converted` | Keep converted audio files after upload |
+| `--keep-converted` | Keep converted audio files after upload. A converted video's audio is written beside the video; a downloaded link's audio goes to `~/Downloads` |
 | `--trim-silence` | Trim silence at the end of converted audio files |
 | `--silence-threshold` | Silence detection threshold (default: -50dB) |
 | `--min-silence-duration` | Minimum silence duration to trigger trimming in seconds (default: 2.0) |
@@ -210,6 +210,10 @@ Credentials are asked for once and, if you choose to remember them, kept in the 
 Keychain rather than in a file or an environment variable - the same prompt macOS
 itself uses for network passwords. Quitting and reopening the app does not ask again
 until you sign out.
+
+**Sign Out** appears beside the account button once you are signed in. It removes the
+Keychain entry and the remembered username and empties the Creative Tonie list, so the
+next launch asks for credentials again.
 
 ## Silence Trimming Feature
 

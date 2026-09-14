@@ -232,6 +232,20 @@ def probe_url(url):
 
     return [entry_of(payload, url)]
 
+def default_download_dir():
+    """Where --keep-converted puts downloaded audio.
+
+    Not os.getcwd(): a macOS app launched from Finder has "/" as its working
+    directory, which is read-only, so a kept download would fail with an error that
+    points nowhere near the cause. ~/Downloads is the obvious place a person would
+    look for it; if it is somehow not writable, a temporary directory is used rather
+    than failing the whole run.
+    """
+    downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+    if os.path.isdir(downloads) and os.access(downloads, os.W_OK):
+        return downloads
+    return tempfile.mkdtemp(prefix="tonie_download_")
+
 def download_url(url, output_dir):
     """Download a link's audio into output_dir.
 
@@ -532,8 +546,8 @@ def get_audio_files(input_paths):
                 f"Install it with: brew install yt-dlp"
             )
 
-        download_dir = (tempfile.mkdtemp(prefix="tonie_download_")
-                        if not args.keep_converted else os.getcwd())
+        download_dir = (default_download_dir() if args.keep_converted
+                        else tempfile.mkdtemp(prefix="tonie_download_"))
         logging.info(f"Downloading {len(urls)} link(s) to {download_dir}")
 
         for url in urls:
@@ -1188,9 +1202,12 @@ def main(argv=None):
     setup_logging()
 
     try:
-        # Validate input paths
+        # Validate input paths. A link has nothing on disk to check - it is resolved
+        # later, by collect_input_files/download_url - so only local paths are checked
+        # here. Checking a URL with os.path.exists() rejected every link before the
+        # feature could run at all.
         for path in args.input_paths:
-            if not os.path.exists(path):
+            if not is_url(path) and not os.path.exists(path):
                 raise FileNotFoundError(f"Input path does not exist: {path}")
         
         username, password = resolve_credentials(args)

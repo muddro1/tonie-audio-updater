@@ -3,6 +3,7 @@
 Everything slow goes through gui.worker; everything decided goes through gui.run and
 gui.state. This module holds widgets and wiring, and as little judgement as possible.
 """
+import logging
 import os
 import sys
 import threading
@@ -324,8 +325,16 @@ class MainWindow(QMainWindow):
         row.addWidget(self.progress, 1)
 
         self.account_button = QPushButton("Sign In...")
-        self.account_button.clicked.connect(self.sign_in)
+        # A lambda, so Qt's "checked" argument is not passed through as sign_in's
+        # message - the sheet would show "False" above the fields.
+        self.account_button.clicked.connect(lambda: self.sign_in())
         row.addWidget(self.account_button)
+
+        # Hidden until there is an account to sign out of.
+        self.sign_out_button = QPushButton("Sign Out")
+        self.sign_out_button.setVisible(False)
+        self.sign_out_button.clicked.connect(self.sign_out)
+        row.addWidget(self.sign_out_button)
 
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setEnabled(False)
@@ -364,6 +373,16 @@ class MainWindow(QMainWindow):
         if not values:
             return None
 
+        # A drop lands on the window itself, which is not one of the widgets
+        # set_running() disables, so this is reachable mid-run. _start() would refuse
+        # it - the single-flight lock holds - but the set_running(False) that followed
+        # the refusal used to switch Cancel off and hide the progress bar while the
+        # real run was still going.
+        if self._is_busy():
+            self.show_banner("Something is already running.")
+            return None
+
+        self._configure_engine(values)
         self.set_running(True)
         started = self._start(_expand_all, values, on_done=self._sources_expanded)
         if started is None or not self._wants_worker():
@@ -575,10 +594,11 @@ class MainWindow(QMainWindow):
 
     def current_state(self):
         """Every control, as the GuiState that gui.state turns into CLI arguments."""
+        paths = sources_model.resolved_paths(self.sources)
         return GuiState(
-            sources=sources_model.resolved_paths(self.sources),
+            sources=paths,
 
-            convert_video=self.convert_video.isChecked(),
+            convert_video=self.convert_video.isChecked() or _has_video(paths),
             ffmpeg_path=self.ffmpeg_path.text().strip() or "ffmpeg",
             ytdlp_path=self.ytdlp_path.text().strip() or "yt-dlp",
             audio_bitrate=self.audio_bitrate.currentText().strip() or "128k",
@@ -597,13 +617,31 @@ class MainWindow(QMainWindow):
             force_update=self.force_update.isChecked(),
         )
 
+    def _configure_engine(self, values):
+        """Point the engine at the window's controls before it is asked to do anything.
+
+        Reading a file's duration and probing a link both go through tony.args -
+        ffmpeg_path, ytdlp_path, audio_bitrate - which nothing set until an upload
+        applied the window's state. Expansion happens long before that, so on a freshly
+        launched window every source came back carrying an AttributeError where its
+        duration should have been, and nothing could be uploaded at all.
+
+        The state is applied with the values about to be expanded standing in for the
+        sources, since -i takes at least one value and these are the values the engine
+        is about to be asked about. start_upload() applies the real state again before
+        anything is uploaded, so nothing here outlives the expansion it configures.
+        """
+        state = self.current_state()
+        state.sources = list(values)
+        apply(state)
+
     # ------------------------------------------------------------------- running
 
     def _inputs(self):
         return (self.add_folder_button, self.add_files_button, self.add_link_button,
                 self.remove_source_button, self.refresh_tonies_button,
                 self.needing_update_button, self.source_tree, self.tonie_tree,
-                self.advanced_group, self.account_button)
+                self.advanced_group, self.account_button, self.sign_out_button)
 
     def set_running(self, flag):
         """While work is in flight, nothing may be changed and Cancel is the only way
@@ -672,8 +710,19 @@ class MainWindow(QMainWindow):
         self.set_running(False)
 
     def _work_failed(self, message):
-        self.append_line(message)
-        self.show_banner(message.splitlines()[0] if message else "Something went wrong.")
+        """What went wrong, in one line.
+
+        The Worker sends the exception followed by its whole traceback. The log pane is
+        read by someone who wants to know whether their audio arrived, so only the
+        first line goes there; the rest is logged at DEBUG, which the Worker's bridge
+        (running the root logger at INFO) never forwards back into the window.
+        """
+        lines = (message or "").splitlines()
+        first = lines[0] if lines else "Something went wrong."
+        self.append_line(first)
+        if len(lines) > 1:
+            logging.getLogger(__name__).debug("Work failed: %s", message)
+        self.show_banner(first)
 
     def append_line(self, text):
         self.log.appendPlainText(text)
@@ -789,6 +838,10 @@ class MainWindow(QMainWindow):
 
     def start_upload(self):
         """Settle the config on this thread, then do the work on another."""
+        if self._is_busy():
+            self.show_banner("Something is already running.")
+            return
+
         tonies = self.selected_tonies()
         if not tonies:
             self.show_banner("Choose at least one Creative Tonie.")
@@ -884,10 +937,46 @@ class MainWindow(QMainWindow):
         self.show_banner(f"Upload failed: {first[0] if first else 'unknown error'}")
 
     def cancel_upload(self):
+        """Stop after the current step - but not without asking, mid-upload.
+
+        A Tonie's chapters are cleared before the new ones are sent, so stopping
+        partway can leave it holding less than it started with. The chapters that were
+        on the ticked Tonies when the window last looked are named, so what is at risk
+        is on screen rather than only in the summary afterwards. Ok/Cancel with Cancel
+        as the default, the same shape as the upload confirmation, so the safe answer
+        is the one a stray Return key gives.
+
+        Nothing is asked when nothing is running - and nothing is asked about chapters
+        that no Tonie is holding, which is the case while a sign-in or an expansion is
+        the work being cancelled.
+        """
+        if self._is_busy() and not self._confirm_cancel():
+            return
         self._cancel.set()
         if self._worker is not None:
             self._worker.cancel()
         self.append_line("Cancelling after the current step...")
+
+    def _confirm_cancel(self):
+        titles = []
+        for tonie in self.selected_tonies():
+            titles.extend(tony.existing_chapter_titles(tonie))
+
+        lines = [
+            "Stopping now may leave a Creative Tonie incomplete: its existing chapters "
+            "are cleared before the new ones are uploaded.",
+            "",
+        ]
+        if titles:
+            lines += ["Chapters that were on the ticked Creative Tonies:"]
+            lines += [f"  \u2022 {title}" for title in titles]
+            lines += [""]
+        lines += ["Stop the upload anyway?"]
+
+        answer = QMessageBox.question(self, "Stop the upload?", "\n".join(lines),
+                                      QMessageBox.Ok | QMessageBox.Cancel,
+                                      QMessageBox.Cancel)
+        return answer == QMessageBox.Ok
 
     # ------------------------------------------------------------------- account
 
@@ -912,9 +1001,13 @@ class MainWindow(QMainWindow):
         if not (self._username and self._password):
             self.sign_in()
             return
+        if self._is_busy():
+            self.show_banner("Something is already running.")
+            return
         self.set_running(True)
         started = self._start(_sign_in_job, self._username, self._password,
-                              on_done=self._signed_in)
+                              on_done=self._signed_in,
+                              on_failed=self._sign_in_failed)
         if started is None or not self._wants_worker():
             self.set_running(False)
 
@@ -922,6 +1015,29 @@ class MainWindow(QMainWindow):
         self._api, tonies, households, image_paths = result
         self.set_tonies(tonies, households, image_paths)
         self.account_button.setText(f"Signed in as {self._username}")
+        self.sign_out_button.setVisible(True)
+
+    def _sign_in_failed(self, message):
+        """A rejected password is not a crash: ask again, with the reason.
+
+        Only the first line is shown. The rest of what the engine raised is a Python
+        traceback, which tells the person holding a wrong password nothing and is not
+        what the sheet is for; it is still logged at DEBUG for a developer.
+        """
+        first = (message or "").splitlines()
+        self.sign_in(message=first[0] if first else "Sign-in failed")
+
+    def sign_out(self):
+        """Forget this household's credentials and go back to the signed-out window."""
+        signin.forget(self._username)
+        self._api = None
+        self._username = None
+        self._password = None
+        self._cancel.clear()
+        self.account_button.setText("Sign In...")
+        self.sign_out_button.setVisible(False)
+        self.set_tonies([], {})
+        self.show_banner("Signed out.")
 
     # ----------------------------------------------------------------- drag/drop
 
@@ -943,6 +1059,21 @@ class MainWindow(QMainWindow):
         if values:
             self.add_sources(values)
             event.acceptProposedAction()
+
+
+def _has_video(paths):
+    """Whether any of these sources is a video file that would need converting.
+
+    The engine only converts video when conversion is asked for, or when there is no
+    audio at all - so a folder holding one MP3 beside two MKVs uploads the MP3 and
+    silently drops the videos. The window has already listed those videos as ticked,
+    duration-bearing sources and counted them in the confirmation, so it must ask for
+    the conversion that makes that count true. A link is never a local video file, no
+    matter what its address ends in.
+    """
+    return any(not tony.is_url(path)
+               and os.path.splitext(path)[1].lower() in tony.VIDEO_EXTENSIONS
+               for path in paths)
 
 
 def _set_selected(source, checked):

@@ -239,9 +239,11 @@ def test_a_source_expands_on_a_real_worker_thread(threaded_window, configure, qt
                                                   monkeypatch):
     """The path users actually run: dispatched to a Worker, delivered by the loop."""
     configure()
+    # Each link's entries carry its own address: two genuinely different links never
+    # hand back the same video twice, and the preview drops a repeated source.
     monkeypatch.setattr(tony, "probe_url", lambda url: [
-        {"url": "https://example.com/1", "title": "One", "duration": 600.0},
-        {"url": "https://example.com/2", "title": "Two", "duration": 600.0},
+        {"url": f"{url}/1", "title": "One", "duration": 600.0},
+        {"url": f"{url}/2", "title": "Two", "duration": 600.0},
     ])
     window = threaded_window
 
@@ -381,3 +383,310 @@ def test_sign_in_fetches_images_for_every_tonie(window, configure, monkeypatch):
     window.refresh_tonies()
 
     assert "tonies" in seen
+
+
+# ------------------------------------------------- video sources the engine honors
+
+def _video_file(path, seconds=2):
+    """A real, tiny video file - enough for ffmpeg to convert into audio."""
+    import subprocess
+
+    from conftest import FFMPEG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [FFMPEG, "-loglevel", "error",
+         "-f", "lavfi", "-i", f"testsrc=size=32x32:rate=5:duration={seconds}",
+         "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+         "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-b:a", "32k",
+         "-shortest", "-y", str(path)],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+@requires_ffmpeg
+def test_a_ticked_video_turns_conversion_on_by_itself(window, configure, tone_file,
+                                                      tmp_path):
+    """The window lists videos as uploadable, so the state it builds must convert them.
+
+    With the box unticked the engine only auto-converts when there is no audio at all,
+    so a folder holding one MP3 beside two MKVs would upload the MP3 and silently drop
+    the videos - against a confirmation that counted all three.
+    """
+    configure()
+    tone_file(2, "a.mp3")
+    _video_file(tmp_path / "b.mkv")
+    _video_file(tmp_path / "c.mkv")
+
+    window.add_source(str(tmp_path))
+
+    assert window.convert_video.isChecked() is False
+    assert window.current_state().convert_video is True
+    assert "3 files" in window.summary_text()
+
+
+@requires_ffmpeg
+def test_the_upload_holds_every_file_the_preview_counted(window, configure, tone_file,
+                                                         tmp_path):
+    """End to end: what the state sends to the engine is what the preview promised."""
+    from gui.state import apply as apply_state
+
+    configure()
+    tone_file(2, "a.mp3")
+    _video_file(tmp_path / "b.mkv")
+
+    window.add_source(str(tmp_path))
+    window.no_duration_limit.setChecked(True)
+
+    state = window.current_state()
+    apply_state(state)
+    files = tony.get_audio_files(tony.args.input_paths)
+
+    try:
+        assert sorted(f.title for f in files) == ["a", "b"]
+        assert len(files) == len(window.current_state().sources)
+    finally:
+        tony.cleanup_converted_files()
+
+
+@requires_ffmpeg
+def test_a_video_beside_a_link_is_not_dropped(window, configure, monkeypatch,
+                                              tmp_path):
+    """A link's download makes audio_files non-empty, which used to stop the engine
+    ever auto-converting the videos added alongside it."""
+    configure()
+    _video_file(tmp_path / "b.mkv")
+    monkeypatch.setattr(tony, "probe_url", lambda url: [
+        {"url": "https://example.com/1", "title": "Remote", "duration": 60.0},
+    ])
+
+    window.add_source(str(tmp_path))
+    window.add_source("https://example.com/x")
+
+    assert window.current_state().convert_video is True
+
+
+def test_a_link_that_looks_like_a_video_file_does_not_force_conversion(window,
+                                                                      configure,
+                                                                      monkeypatch):
+    """A link is downloaded, never converted - its address is not a local file."""
+    configure()
+    monkeypatch.setattr(tony, "probe_url", lambda url: [
+        {"url": "https://example.com/story.mp4", "title": "Story", "duration": 60.0},
+    ])
+
+    window.add_source("https://example.com/story.mp4")
+
+    assert window.current_state().convert_video is False
+
+
+@requires_ffmpeg
+def test_the_confirmation_counts_a_repeated_file_once(window, configure, tone_file,
+                                                      tmp_path):
+    """Adding a file and the folder holding it must not count it twice."""
+    configure()
+    target = tone_file(2, "once.mp3")
+
+    window.add_source(str(tmp_path))
+    window.add_source(str(target))
+
+    assert "1 file" in window.summary_text()
+    assert window.current_state().sources == [str(target)]
+
+
+# ------------------------------------------------------------ signing in and out
+
+class FakeSignInDialog:
+    """Stands in for the credential sheet, recording what it was told to say."""
+
+    shown = []
+
+    def __init__(self, parent=None, username="", message=None, accept=False):
+        FakeSignInDialog.shown.append(message)
+        self._accept = accept
+
+    def exec(self):
+        return 1 if self._accept else 0
+
+    def username(self):
+        return "me@example.com"
+
+    def password(self):
+        return "pw"
+
+    def remember(self):
+        return True
+
+
+@pytest.fixture
+def sheet(monkeypatch):
+    """Every sign-in sheet the window opens, in order, by the message it carried."""
+    FakeSignInDialog.shown = []
+    monkeypatch.setattr("gui.app.signin.SignInDialog", FakeSignInDialog)
+    return FakeSignInDialog.shown
+
+
+def _sign_the_window_in(window):
+    """Put the window in the state a successful sign-in leaves it in."""
+    window._username = "me@example.com"
+    window._signed_in((object(), [FakeTonie("Elephant", id="t1")], {"t1": "Home"}, {}))
+    return window
+
+
+def test_signing_in_reveals_the_sign_out_button(window, configure):
+    configure()
+    assert window.sign_out_button.isHidden() is True
+
+    _sign_the_window_in(window)
+
+    assert window.sign_out_button.isHidden() is False
+    assert window.account_button.text() == "Signed in as me@example.com"
+
+
+def test_signing_out_forgets_the_account_and_empties_the_window(window, configure,
+                                                                monkeypatch):
+    """The Keychain is not touched here - forget() has its own tests; what matters is
+    that the button reaches it, with the username that was signed in."""
+    configure()
+    forgotten = []
+    monkeypatch.setattr("gui.app.signin.forget", lambda username:
+                        forgotten.append(username))
+    _sign_the_window_in(window)
+
+    window.sign_out_button.click()
+
+    assert forgotten == ["me@example.com"]
+    assert window._api is None
+    assert window._username is None
+    assert window._password is None
+    assert window.account_button.text() == "Sign In..."
+    assert window.sign_out_button.isHidden() is True
+    assert window._tonie_rows() == []
+    assert window.selected_tonies() == []
+
+
+def test_signing_out_then_in_asks_for_credentials_again(window, configure, monkeypatch,
+                                                        sheet):
+    configure()
+    monkeypatch.setattr("gui.app.signin.forget", lambda username: None)
+    _sign_the_window_in(window)
+
+    window.sign_out()
+    window.account_button.click()
+
+    assert sheet == [None]      # the sheet was opened, with no error message
+
+
+def test_the_account_button_does_not_pass_qts_checked_flag_as_a_message(window,
+                                                                        configure,
+                                                                        sheet):
+    """clicked(bool) would otherwise land in sign_in's message parameter."""
+    configure()
+
+    window.account_button.click()
+
+    assert sheet == [None]
+
+
+# ------------------------------------------------------- a sign-in that is refused
+
+def _failing_sign_in(monkeypatch, message):
+    monkeypatch.setattr("gui.app._sign_in_job",
+                        lambda username, password: (_ for _ in ()).throw(
+                            ValueError(message)))
+
+
+def test_a_refused_password_reopens_the_sheet_with_the_reason(window, configure,
+                                                              monkeypatch, sheet):
+    configure()
+    _failing_sign_in(monkeypatch, "Failed to acquire session token")
+    window._username, window._password = "me@example.com", "wrong"
+
+    window.refresh_tonies()
+
+    assert sheet == ["Failed to acquire session token"]
+
+
+def test_the_traceback_stays_out_of_the_log_pane(window, configure, monkeypatch,
+                                                 sheet):
+    """The pane is read by someone who wants to know whether their audio arrived."""
+    configure()
+    _failing_sign_in(monkeypatch, "Failed to acquire session token")
+    window._username, window._password = "me@example.com", "wrong"
+
+    window.refresh_tonies()
+
+    log = window.log.toPlainText()
+    assert "Failed to acquire session token" in log
+    assert "Traceback" not in log
+    assert len(log.strip().splitlines()) == 1
+    assert window.banner_label.text() == "Failed to acquire session token"
+
+
+def test_a_refused_sign_in_on_a_real_thread_reopens_the_sheet(threaded_window,
+                                                              configure, qtbot,
+                                                              monkeypatch, sheet):
+    """The path users get: the failure arrives from a Worker thread."""
+    configure()
+    _failing_sign_in(monkeypatch, "Failed to acquire session token")
+    window = threaded_window
+    window._username, window._password = "me@example.com", "wrong"
+
+    window.refresh_tonies()
+    qtbot.waitUntil(lambda: bool(sheet), timeout=10000)
+    qtbot.waitUntil(lambda: window.add_folder_button.isEnabled(), timeout=10000)
+
+    assert sheet == ["Failed to acquire session token"]
+    assert "Traceback" not in window.log.toPlainText()
+
+
+# ------------------------------------------- a window nothing has configured yet
+
+@requires_ffmpeg
+def test_a_freshly_launched_window_can_read_a_file(window, monkeypatch, tone_file):
+    """The shipped app starts with tony.args unset - nothing parses arguments for it.
+
+    Reading a duration goes through tony.args.ffmpeg_path, so every source added
+    before the first upload came back carrying an AttributeError instead of a length,
+    and was dropped from the upload as a failed source. Every test in the suite used
+    the `configure` fixture, which sets tony.args, and so could not see it.
+    """
+    monkeypatch.setattr(tony, "args", None)
+    target = tone_file(3, "solo.mp3")
+
+    window.add_source(str(target))
+
+    assert [s.error for s in window.sources] == [None]
+    assert window.sources[0].duration == 3.0
+    assert "1 file" in window.summary_text()
+
+
+def test_a_freshly_launched_window_can_probe_a_link(window, monkeypatch):
+    """The same, for a link: probe_url reads tony.args.ytdlp_path."""
+    monkeypatch.setattr(tony, "args", None)
+    seen = {}
+
+    def probe(url):
+        seen["ytdlp_path"] = tony.args.ytdlp_path
+        return [{"url": url, "title": "One", "duration": 60.0}]
+
+    monkeypatch.setattr(tony, "probe_url", probe)
+
+    window.add_source("https://example.com/x")
+
+    assert seen["ytdlp_path"] == "yt-dlp"
+    assert [s.error for s in window.sources] == [None]
+
+
+def test_the_engine_is_configured_from_the_windows_own_controls(window, monkeypatch,
+                                                                tone_file):
+    """Not from defaults: whatever the Advanced panel says is what expansion uses."""
+    monkeypatch.setattr(tony, "args", None)
+    target = tone_file(2, "solo.mp3")
+    window.ffmpeg_path.setText("/custom/ffmpeg")
+    window.max_duration.setValue(45.0)
+
+    window.add_source(str(target))
+
+    assert tony.args.ffmpeg_path == "/custom/ffmpeg"
+    assert tony.args.max_duration == 45.0
