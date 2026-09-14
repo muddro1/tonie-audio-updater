@@ -39,24 +39,29 @@ def test_no_candidates_present_leaves_path_unchanged():
 
 
 def test_defaults_cover_apple_silicon_and_intel_homebrew_and_macports():
-    """These are the three real install locations this fix exists to find."""
+    """These are the three real installers this fix exists to find, each contributing a bin and sbin directory."""
     result = augment_path(current="/usr/bin:/bin:/usr/sbin:/sbin")
     for path in MAC_CANDIDATES:
         assert path in result.split(":")
 
 
-def test_reproduces_the_actual_bug_and_confirms_the_fix(monkeypatch):
+def test_reproduces_the_actual_bug_and_confirms_the_fix(tmp_path, monkeypatch):
     """The exact scenario found in the field: a restricted PATH hides an installed tool."""
     import shutil
-    monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-    assert shutil.which("git") is None or True  # sanity: PATH really is restricted here
+    import stat
 
-    # Before the fix: ffmpeg is not found under the restricted PATH (this is the bug)
-    # After augmenting: it is found, PROVIDED it is actually installed at a candidate
-    # location on this machine - this assertion is informational, not a hard requirement,
-    # since CI environments vary in where (or whether) ffmpeg is installed.
-    fixed = augment_path(current="/usr/bin:/bin:/usr/sbin:/sbin")
+    # A fake "ffmpeg" that exists only in a directory PATH does not yet include -
+    # standing in for a real Homebrew install without depending on one being present.
+    fake_bin = tmp_path / "fake-homebrew" / "bin"
+    fake_bin.mkdir(parents=True)
+    fake_ffmpeg = fake_bin / "ffmpeg"
+    fake_ffmpeg.write_text("#!/bin/sh\necho fake\n")
+    fake_ffmpeg.chmod(fake_ffmpeg.stat().st_mode | stat.S_IEXEC)
+
+    restricted = "/usr/bin:/bin:/usr/sbin:/sbin"
+    monkeypatch.setenv("PATH", restricted)
+    assert shutil.which("ffmpeg") is None  # not found under the restricted PATH
+
+    fixed = augment_path(current=restricted, candidates=[str(fake_bin)])
     monkeypatch.setenv("PATH", fixed)
-    import subprocess
-    found_after = shutil.which("ffmpeg") is not None
-    print(f"ffmpeg found after PATH fix: {found_after} (informational)")
+    assert shutil.which("ffmpeg") == str(fake_ffmpeg)  # found once augmented
