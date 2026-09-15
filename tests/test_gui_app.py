@@ -420,7 +420,6 @@ def test_a_ticked_video_turns_conversion_on_by_itself(window, configure, tone_fi
 
     window.add_source(str(tmp_path))
 
-    assert window.convert_video.isChecked() is False
     assert window.current_state().convert_video is True
     assert "3 files" in window.summary_text()
 

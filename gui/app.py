@@ -238,7 +238,6 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Video")
         form = QFormLayout(box)
 
-        self.convert_video = QCheckBox("Convert video files to audio")
         self.keep_converted = QCheckBox("Keep converted files")
         self.ffmpeg_path = QLineEdit("ffmpeg")
         self.ytdlp_path = QLineEdit("yt-dlp")
@@ -247,7 +246,6 @@ class MainWindow(QMainWindow):
         self.audio_bitrate.addItems(["64k", "96k", "128k", "192k", "256k"])
         self.audio_bitrate.setCurrentText("128k")
 
-        form.addRow(self.convert_video)
         form.addRow(self.keep_converted)
         form.addRow("ffmpeg", self.ffmpeg_path)
         form.addRow("yt-dlp", self.ytdlp_path)
@@ -598,7 +596,11 @@ class MainWindow(QMainWindow):
         return GuiState(
             sources=paths,
 
-            convert_video=self.convert_video.isChecked() or _has_video(paths),
+            # No manual control for this: a video among the ticked sources means
+            # conversion must happen, and one that isn't means there is nothing to
+            # convert - either way there was never a real choice for a checkbox to
+            # make. See _has_video's docstring for why the alternative was a bug.
+            convert_video=_has_video(paths),
             ffmpeg_path=self.ffmpeg_path.text().strip() or "ffmpeg",
             ytdlp_path=self.ytdlp_path.text().strip() or "yt-dlp",
             audio_bitrate=self.audio_bitrate.currentText().strip() or "128k",

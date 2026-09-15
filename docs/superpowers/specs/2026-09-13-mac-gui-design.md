@@ -247,11 +247,22 @@ buttons mirror the menu's `a` and `u` shortcuts.
 The `Advanced` disclosure is collapsed by default and holds every remaining CLI option,
 in four labelled groups:
 
-- **Video**: convert video, audio bitrate, keep converted files
+- **Video**: audio bitrate, keep converted files
 - **Silence**: trim silence, threshold, minimum silence duration
 - **Limits and retries**: maximum duration, no duration limit, upload retries, retry
   delay
 - **Run**: dry run, force update
+
+No manual "convert video" control: the checkbox this section originally specified had a
+real bug behind it - without it, a folder mixing audio and video silently dropped the
+video files, since the engine only auto-converts when *no* audio is present at all. The
+fix does not restore a choice to the checkbox; it removes the choice's premise. The
+window now sets `--convert-video` for the engine automatically whenever a ticked source
+is a video file, which is every case in which conversion could matter - a source list
+with no video has nothing for the flag to act on either way. `GuiState.convert_video`
+still exists, still maps to the same CLI flag, and still keeps the anti-drift test happy;
+only the widget a person could toggle is gone, because toggling it never changed the
+outcome once the automatic behavior was correct.
 
 ### Flow
 
