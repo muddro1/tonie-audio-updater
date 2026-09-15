@@ -132,6 +132,56 @@ def test_get_audio_duration_returns_none_when_ffmpeg_is_missing(configure):
     assert tony.get_audio_duration("/some/file.mp3") is None
 
 
+def test_get_audio_duration_does_not_ask_ffmpeg_to_decode(configure, monkeypatch):
+    """Regression guard for a real bug: -f null - fully decodes the file just to read
+    a duration already sitting in the startup banner. Invisible on the few-second clips
+    every other test here uses; on a real video it made a "cheap" GUI preview take as
+    long as playing the file. Assert on the command itself, not just correctness,
+    since a reintroduced -f null - would still return the right number - slowly."""
+    configure()
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return SimpleNamespace(stderr="Duration: 00:00:05.00, start: 0.0", returncode=1)
+
+    monkeypatch.setattr(tony.subprocess, "run", fake_run)
+
+    tony.get_audio_duration("/some/file.mp4")
+
+    assert "-f" not in seen["cmd"]
+    assert "null" not in seen["cmd"]
+
+
+@requires_ffmpeg
+def test_get_audio_duration_reads_a_real_videos_duration_without_decoding_it(configure,
+                                                                             tmp_path):
+    """The case that actually broke: nothing before this exercised a video file, so
+    the full-decode cost stayed invisible until someone loaded a real one."""
+    import subprocess
+    import time
+
+    video = tmp_path / "clip.mp4"
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error",
+         "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=20",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=20",
+         "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+         "-y", str(video)],
+        check=True, capture_output=True,
+    )
+
+    configure()
+    start = time.time()
+    duration = tony.get_audio_duration(str(video))
+    elapsed = time.time() - start
+
+    assert duration == pytest.approx(20, abs=0.5)
+    # A full decode of even this short a clip takes noticeably longer than reading
+    # its header; a generous bound catches a regression without being timing-fragile.
+    assert elapsed < 5.0
+
+
 # --- enforce_max_duration: the single-file cap -----------------------------
 
 @requires_ffmpeg

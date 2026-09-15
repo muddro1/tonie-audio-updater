@@ -293,13 +293,21 @@ def download_url(url, output_dir):
     return downloaded
 
 def get_audio_duration(audio_path):
-    """Get the duration of an audio file in seconds, or None if it can't be read"""
+    """Get the duration of an audio file in seconds, or None if it can't be read.
+
+    Reads only ffmpeg's startup banner - the Duration: line it prints as soon as it
+    opens the file - never the -f null - full decode detect_silence_end needs for its
+    own, genuinely different job of analysing the audio. On a short test clip the
+    difference is invisible; on a real video (a phone recording, a screen capture) a
+    full decode can take as long as playing the file, for a GUI preview that promises
+    to stay cheap. Without an output, ffmpeg exits non-zero ("must specify an output
+    file") after printing that banner - the exit code is not checked here, only the
+    line already written to stderr by that point.
+    """
     try:
         cmd = [
             args.ffmpeg_path,
             "-i", str(audio_path),
-            "-f", "null",
-            "-"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
 
