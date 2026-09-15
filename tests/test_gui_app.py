@@ -128,6 +128,90 @@ def test_a_link_that_fails_is_shown_not_dropped(window, configure, monkeypatch):
     assert "Private video" in window.sources[0].error
 
 
+def _select_top_level_rows(window, indices):
+    """Select the top-level source rows at these indices, the way a real click-drag
+    or Cmd-click selection would - through the tree widget, not the model."""
+    tree = window.source_tree
+    tree.clearSelection()
+    for i in indices:
+        tree.topLevelItem(i).setSelected(True)
+
+
+def test_removing_one_source_leaves_the_others(window):
+    window.sources = [
+        SourceItem(kind="file", value="/a.mp3", title="a", duration=1.0),
+        SourceItem(kind="file", value="/b.mp3", title="b", duration=2.0),
+        SourceItem(kind="file", value="/c.mp3", title="c", duration=3.0),
+    ]
+    window.refresh_summary()
+    _select_top_level_rows(window, [1])
+
+    window.remove_selected_source()
+
+    assert [s.title for s in window.sources] == ["a", "c"]
+
+
+def test_removing_several_selected_sources_at_once(window):
+    """The gap this closes: only one source could be removed per click before."""
+    window.sources = [
+        SourceItem(kind="file", value="/a.mp3", title="a", duration=1.0),
+        SourceItem(kind="file", value="/b.mp3", title="b", duration=2.0),
+        SourceItem(kind="file", value="/c.mp3", title="c", duration=3.0),
+        SourceItem(kind="file", value="/d.mp3", title="d", duration=4.0),
+    ]
+    window.refresh_summary()
+    _select_top_level_rows(window, [0, 2, 3])  # a, c, d - a non-contiguous selection
+
+    window.remove_selected_source()
+
+    assert [s.title for s in window.sources] == ["b"]
+
+
+def test_the_tree_actually_allows_selecting_more_than_one_row(window):
+    """The root cause: without ExtendedSelection, a real Cmd-click or Shift-click
+    cannot add to the selection - only one row is ever interactively selectable, no
+    matter how many rows the other tests here select programmatically.
+
+    setSelected(True) - what _select_top_level_rows and every other test above uses
+    - sets selection state directly and ignores selectionMode() entirely; it would
+    report 2 selected rows whether or not multi-select actually works, so it cannot
+    stand in for this check. This asserts on the widget's own configuration instead,
+    which is what a real click depends on."""
+    assert (window.source_tree.selectionMode()
+           == window.source_tree.SelectionMode.ExtendedSelection)
+
+
+def test_selecting_a_child_row_removes_its_whole_top_level_source(window):
+    """Remove has never operated below whole-source granularity; multi-select must
+    not change that - selecting a file inside a folder still drops the folder."""
+    folder = SourceItem(kind="folder", value="/music", title="music")
+    folder.children = [
+        SourceItem(kind="file", value="/music/x.mp3", title="x", duration=1.0),
+    ]
+    window.sources = [folder,
+                      SourceItem(kind="file", value="/keep.mp3", title="keep",
+                                duration=2.0)]
+    window.refresh_summary()
+
+    child_row = window.source_tree.topLevelItem(0).child(0)
+    window.source_tree.clearSelection()
+    child_row.setSelected(True)
+
+    window.remove_selected_source()
+
+    assert [s.title for s in window.sources] == ["keep"]
+
+
+def test_removing_with_nothing_selected_does_nothing(window):
+    window.sources = [SourceItem(kind="file", value="/a.mp3", title="a", duration=1.0)]
+    window.refresh_summary()
+    window.source_tree.clearSelection()
+
+    window.remove_selected_source()
+
+    assert [s.title for s in window.sources] == ["a"]
+
+
 def test_upload_is_disabled_without_sources_or_tonies(window):
     assert window.upload_button.isEnabled() is False
 

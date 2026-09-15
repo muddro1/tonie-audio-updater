@@ -184,6 +184,7 @@ class MainWindow(QMainWindow):
         self.source_tree = QTreeWidget()
         self.source_tree.setHeaderLabels(["Title", "Length"])
         self.source_tree.setRootIsDecorated(True)
+        self.source_tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.source_tree.itemChanged.connect(self._source_item_changed)
         column.addWidget(self.source_tree, 1)
 
@@ -411,14 +412,27 @@ class MainWindow(QMainWindow):
             self.add_source(url.strip())
 
     def remove_selected_source(self):
-        """Drop the whole top-level source the highlighted row belongs to."""
-        item = self.source_tree.currentItem()
-        while item is not None and item.parent() is not None:
-            item = item.parent()
-        if item is None:
+        """Drop every whole top-level source any selected row belongs to.
+
+        Selecting a child row (a file inside a folder, an entry in a playlist) still
+        removes the whole top-level source it came from, exactly as selecting the
+        parent row does - Remove has never operated at finer granularity than that,
+        multi-select just lets several top-level sources go in one action instead of
+        one at a time. A source can only appear once regardless of how many of its own
+        rows were selected, so a dict keyed by id() (SourceItem has no __eq__) stands
+        in for an order-preserving set.
+        """
+        doomed = {}
+        for item in self.source_tree.selectedItems():
+            while item.parent() is not None:
+                item = item.parent()
+            source = item.data(0, Qt.UserRole)
+            doomed[id(source)] = source
+
+        if not doomed:
             return
-        source = item.data(0, Qt.UserRole)
-        self.sources = [s for s in self.sources if s is not source]
+
+        self.sources = [s for s in self.sources if id(s) not in doomed]
         self.refresh_summary()
 
     def refresh_summary(self):
