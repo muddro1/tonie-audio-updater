@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sign Out, beside the account button once signed in, removes the Keychain entry and
   the remembered username and empties the Creative Tonie list.
 
+### Fixed
+- Adding a video file in the GUI no longer looks like the app has hung. Reading a
+  file's duration for the source-list preview decoded the entire file first, which
+  was invisible on the short clips used to test it but could take as long as playing
+  the file for a real video. The duration check no longer decodes anything, and now
+  times out rather than hanging indefinitely if opening a file is itself slow (a
+  network mount, a spun-down external drive).
+
 ### Changed
 - `--keep-converted` writes a link's downloaded audio to `~/Downloads` rather than the
   working directory, which is `/` - and read-only - for an app launched from Finder.

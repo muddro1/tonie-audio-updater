@@ -303,13 +303,23 @@ def get_audio_duration(audio_path):
     to stay cheap. Without an output, ffmpeg exits non-zero ("must specify an output
     file") after printing that banner - the exit code is not checked here, only the
     line already written to stderr by that point.
+
+    A timeout guards what removing the decode does not: a network-mounted file, a
+    spun-down external drive, or an MP4 whose moov atom sits at the end can still make
+    even opening the file slow. None of that is a decode; it just means "not read
+    yet" for a while - so it fails toward this file being unreadable rather than the
+    caller waiting indefinitely, mirroring what a genuinely corrupt file already does.
     """
     try:
         cmd = [
             args.ffmpeg_path,
             "-i", str(audio_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        except subprocess.TimeoutExpired:
+            logging.warning(f"Timed out reading the duration of {audio_path}")
+            return None
 
         for line in result.stderr.split('\n'):
             if 'Duration:' in line:

@@ -132,6 +132,21 @@ def test_get_audio_duration_returns_none_when_ffmpeg_is_missing(configure):
     assert tony.get_audio_duration("/some/file.mp3") is None
 
 
+def test_get_audio_duration_returns_none_rather_than_hanging_forever(configure,
+                                                                     monkeypatch):
+    """Dropping the full decode fixes the reported case, but not every way opening a
+    file can be slow: a network mount, a spun-down external drive, an MP4 with its
+    moov atom at the end. This is what stands between one of those and the caller
+    waiting indefinitely."""
+    def fake_run(cmd, **kwargs):
+        raise tony.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(tony.subprocess, "run", fake_run)
+    configure()
+
+    assert tony.get_audio_duration("/some/file.mp4") is None
+
+
 def test_get_audio_duration_does_not_ask_ffmpeg_to_decode(configure, monkeypatch):
     """Regression guard for a real bug: -f null - fully decodes the file just to read
     a duration already sitting in the startup banner. Invisible on the few-second clips
@@ -143,23 +158,28 @@ def test_get_audio_duration_does_not_ask_ffmpeg_to_decode(configure, monkeypatch
 
     def fake_run(cmd, **kwargs):
         seen["cmd"] = cmd
+        # returncode=1 models ffmpeg's real exit when no output is given ("must
+        # specify an output file") - the function must tolerate that, not just
+        # happen to when a real ffmpeg is present.
         return SimpleNamespace(stderr="Duration: 00:00:05.00, start: 0.0", returncode=1)
 
     monkeypatch.setattr(tony.subprocess, "run", fake_run)
 
-    tony.get_audio_duration("/some/file.mp4")
+    result = tony.get_audio_duration("/some/file.mp4")
 
-    assert "-f" not in seen["cmd"]
-    assert "null" not in seen["cmd"]
+    assert result == 5.0
+    assert not any(part in ("-f", "null") for part in seen["cmd"])
 
 
 @requires_ffmpeg
-def test_get_audio_duration_reads_a_real_videos_duration_without_decoding_it(configure,
-                                                                             tmp_path):
+def test_get_audio_duration_reads_a_real_videos_duration(configure, tmp_path):
     """The case that actually broke: nothing before this exercised a video file, so
-    the full-decode cost stayed invisible until someone loaded a real one."""
+    the full-decode cost stayed invisible until someone loaded a real one. Timing is
+    not asserted here - on a clip this short the decoded-vs-not gap is a few tens of
+    milliseconds, well inside CI noise; test_get_audio_duration_does_not_ask_ffmpeg_
+    to_decode is the actual regression guard, and it does not depend on how large a
+    difference a full decode happens to make on any given machine."""
     import subprocess
-    import time
 
     video = tmp_path / "clip.mp4"
     subprocess.run(
@@ -172,14 +192,9 @@ def test_get_audio_duration_reads_a_real_videos_duration_without_decoding_it(con
     )
 
     configure()
-    start = time.time()
     duration = tony.get_audio_duration(str(video))
-    elapsed = time.time() - start
 
     assert duration == pytest.approx(20, abs=0.5)
-    # A full decode of even this short a clip takes noticeably longer than reading
-    # its header; a generous bound catches a regression without being timing-fragile.
-    assert elapsed < 5.0
 
 
 # --- enforce_max_duration: the single-file cap -----------------------------
