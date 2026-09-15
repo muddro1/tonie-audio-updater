@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [5.0] - 2026-09-15
 
 ### Added
 - A native macOS GUI (`python -m gui`, or a built `Tonie Audio Updater.app`): pick
@@ -36,13 +36,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the file for a real video. The duration check no longer decodes anything, and now
   times out rather than hanging indefinitely if opening a file is itself slow (a
   network mount, a spun-down external drive).
+- The source list only ever let you remove one item at a time. It now allows
+  selecting several - click, then Cmd-click to add more or Shift-click for a range -
+  so Remove drops them all in one action.
+- `./build/build_app.sh`'s `PYTHON=` override failed when given as a relative path
+  (`PYTHON=.venv-dev/bin/python ./build/build_app.sh`), since the script changes into
+  `build/` before using it. A relative override is now resolved against the directory
+  the script was actually run from.
 
 ### Changed
 - `--keep-converted` writes a link's downloaded audio to `~/Downloads` rather than the
   working directory, which is `/` - and read-only - for an app launched from Finder.
-- The GUI converts video sources whether or not "Convert video" is ticked: it lists
-  video files as uploadable, so it asks the engine for the conversion that makes the
-  file count it shows true.
+- The GUI converts video sources whether or not a video file was among them at the
+  time a folder was added: it lists video files as uploadable, so it asks the engine
+  for the conversion that makes the file count it shows true. There is no longer a
+  "Convert video files to audio" checkbox to set - it never had a real effect to
+  control once this was correct, so the choice it offered was never genuine.
 - `update_tonie` accepts an optional `should_cancel` keyword, polled between files so
   a caller - the GUI - can stop an upload in progress. The CLI's behavior is
   unchanged when it is not passed.
