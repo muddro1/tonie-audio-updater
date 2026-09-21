@@ -34,6 +34,13 @@ def _upload_job(api, tonies, households, should_cancel):
     """
     audio_files = tony.get_audio_files(tony.args.input_paths)
     try:
+        # Renew the session token before the first real write. It was acquired back
+        # at sign-in, and everything since - picking sources, downloading and
+        # converting - can easily outlast Tonie Cloud's short-lived tokens.
+        if not tony.args.dry_run:
+            refresh = getattr(api, "refresh_token", None)
+            if refresh is not None:
+                refresh()
         return run.upload_to_tonies(api, tonies, households, audio_files, should_cancel)
     finally:
         tony.cleanup_converted_files()
@@ -85,7 +92,7 @@ def _sign_in_job(username, password):
     # Imported here so the GUI can be imported without the dependency installed
     from tonie_api.api import TonieAPI
 
-    api = TonieAPI(username, password)
+    api = tony.AutoReauthAPI(TonieAPI(username, password), username, password)
     tonies, households = tony.get_all_creative_tonies(api)
     image_paths = tonie_images.fetch_all(tonies)
     return api, tonies, households, image_paths

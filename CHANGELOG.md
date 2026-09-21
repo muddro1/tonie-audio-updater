@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- An upload could fail with a confusing pydantic error ("2 validation errors for
+  FileUploadRequest ... Field required") instead of a clear one. The Tonie Cloud
+  session token is acquired once - at sign-in in the GUI, at startup on the CLI - and
+  by the time a run reaches its first real write, everything since (picking sources,
+  downloading and converting videos, an interactive confirmation) can have let it
+  expire. The `tonie_api` library treats an unauthorized response as an empty success
+  rather than raising, which made this worse than just a bad error message: a stale
+  token on `clear_all_chapter_of_tonie` was silently taken as "chapters cleared" even
+  though the request never reached the server, and the log said so while the old
+  chapters were, in fact, still on the Tonie. The token is now renewed before a run's
+  first write, and any 401 encountered mid-run triggers one automatic re-sign-in and
+  retry before the failure is reported.
+
 ## [5.0] - 2026-09-15
 
 ### Added

@@ -1124,6 +1124,73 @@ def existing_chapter_titles(tonie):
         return []
     return [getattr(chapter, 'title', 'Untitled') for chapter in tonie.chapters]
 
+class AutoReauthAPI:
+    """Wraps a TonieAPI so an expired session token is quietly renewed.
+
+    Tonie Cloud issues short-lived access tokens, acquired once (at CLI startup, or
+    at GUI sign-in) and then reused for whatever comes next - browsing sources,
+    downloading and converting several YouTube videos - so the token can easily be
+    stale by the time the first real write happens.
+
+    Worse, the tonie_api library treats a failed request as an empty success rather
+    than raising: a 401 on clear_all_chapter_of_tonie() is silently taken as
+    "chapters cleared" (they are not - the request never reached the server) and
+    everywhere else it eventually surfaces as a pydantic validation error on an
+    empty dict, with no hint that the real cause was authentication.
+
+    A response hook on the session turns any non-2xx response into a real
+    HTTPError; __getattr__ below catches a 401 specifically, signs in again, and
+    retries the call once before giving up.
+    """
+
+    def __init__(self, api, username, password, timeout=30):
+        self._api = api
+        self._username = username
+        self._password = password
+        self._timeout = timeout
+
+        session = getattr(api, "session", None)
+        if session is not None:
+            session.hooks.setdefault("response", []).append(self._raise_for_status)
+
+    @staticmethod
+    def _raise_for_status(response, *args, **kwargs):
+        response.raise_for_status()
+
+    def refresh_token(self):
+        """Sign in again, replacing whatever token is currently held.
+
+        acquire_token() swallows its own failures (a timeout, a rejected password)
+        and just leaves session.token as None rather than raising, the same way
+        TonieAPI.__init__ has to check for it explicitly. Left unchecked here, a
+        failed refresh would send `Authorization: Bearer None` and reproduce the
+        very 401-shows-up-as-something-else confusion this class exists to fix.
+        """
+        session = getattr(self._api, "session", None)
+        if session is None:
+            return
+        session.acquire_token(self._username, self._password, timeout=self._timeout)
+        if session.token is None:
+            raise ValueError("Could not sign in to Tonie Cloud again - "
+                             "check credentials and network.")
+
+    def __getattr__(self, name):
+        attr = getattr(self._api, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            import requests
+            try:
+                return attr(*args, **kwargs)
+            except requests.exceptions.HTTPError as e:
+                if e.response is None or e.response.status_code != 401:
+                    raise
+                logging.warning("Tonie Cloud session expired; signing in again")
+                self.refresh_token()
+                return getattr(self._api, name)(*args, **kwargs)
+        return call
+
 def upload_with_retries(tonie_api, tonie, audio_file):
     """Upload one file, retrying a transient failure.
 
@@ -1235,7 +1302,7 @@ def main(argv=None):
 
         # Initialize Tonie API
         print("Connecting to Tonie API...")
-        tonie_api = TonieAPI(username, password)
+        tonie_api = AutoReauthAPI(TonieAPI(username, password), username, password)
         
         # Get audio files
         print(f"Scanning for audio files in: {', '.join(args.input_paths)}")
@@ -1305,6 +1372,12 @@ def main(argv=None):
             cleanup_converted_files()
             return
         
+        # Renew the session token before the first real write. Everything since it was
+        # acquired - scanning input, downloading/converting, any interactive prompts
+        # above - can easily outlast Tonie Cloud's short-lived tokens.
+        if not args.dry_run and updates_needed:
+            tonie_api.refresh_token()
+
         # Perform updates
         print("\n" + "="*70)
         print(f"{'DRY RUN - PREVIEW' if args.dry_run else 'STARTING UPDATES'}")
