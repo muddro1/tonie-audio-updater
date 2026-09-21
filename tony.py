@@ -24,7 +24,8 @@ class AudioTitle:
     is_capped: bool = False  # Track if this was truncated to the duration limit
     is_downloaded: bool = False  # Track if this was fetched from a link
     duration: Optional[float] = None  # Duration in seconds, when known
-    
+    order: tuple = (0, 0)  # Position to upload in - see get_audio_files()
+
     def __eq__(self, other):
         return self.title == other.title
 
@@ -495,16 +496,21 @@ def convert_video_to_audio(video_path, output_dir=None):
         raise
 
 def collect_input_files(input_paths):
-    """Expand the -i arguments into (audio_paths, video_paths, urls).
+    """Expand the -i arguments into (audio_paths, video_paths, urls, order).
 
     A directory is scanned. A file named directly is taken as given, provided its
     extension is one we handle. A link is set aside for downloading rather than
     treated as a path. Order is preserved and duplicates are dropped, so naming a
     file twice, or naming a file inside a directory also given, uploads it once.
+
+    order maps each returned path or URL to the position it was found in, across all
+    three buckets together - get_audio_files() uses it so the final chapter order
+    matches the order things were given in, rather than an alphabetical resort.
     """
     audio_paths = []
     video_paths = []
     urls = []
+    order = {}
     seen = set()
 
     def remember(path, bucket):
@@ -513,11 +519,13 @@ def collect_input_files(input_paths):
             return
         seen.add(resolved)
         bucket.append(path)
+        order[path] = len(order)
 
     for raw in input_paths:
         if is_url(raw):
             if raw not in urls:
                 urls.append(raw)
+                order[raw] = len(order)
             continue
 
         if os.path.isdir(raw):
@@ -541,20 +549,21 @@ def collect_input_files(input_paths):
                 f"{', '.join(AUDIO_EXTENSIONS)}; video: {', '.join(VIDEO_EXTENSIONS)}"
             )
 
-    return audio_paths, video_paths, urls
+    return audio_paths, video_paths, urls, order
 
 def get_audio_files(input_paths):
     """Get all audio files from the input paths, optionally converting video files"""
     audio_files = []
     converted_files = []  # Track converted files for cleanup
 
-    audio_paths, video_paths, urls = collect_input_files(input_paths)
+    audio_paths, video_paths, urls, order = collect_input_files(input_paths)
 
     for audio_file in audio_paths:
         title = os.path.splitext(os.path.basename(audio_file))[0]
         # Truncate title to 100 characters
         title = truncate_title(title, 100)
-        audio_files.append(AudioTitle(filepath=audio_file, title=title))
+        audio_files.append(AudioTitle(filepath=audio_file, title=title,
+                                      order=(order[audio_file], 0)))
 
     # Fetch links
     if urls:
@@ -569,10 +578,11 @@ def get_audio_files(input_paths):
         logging.info(f"Downloading {len(urls)} link(s) to {download_dir}")
 
         for url in urls:
-            for item in download_url(url, download_dir):
+            for position, item in enumerate(download_url(url, download_dir)):
                 title = truncate_title(item["title"], 100)
                 audio_files.append(AudioTitle(filepath=item["filepath"], title=title,
-                                              is_downloaded=True))
+                                              is_downloaded=True,
+                                              order=(order[url], position)))
                 converted_files.append(item["filepath"])
                 logging.info(f"Downloaded: {title}")
 
@@ -621,7 +631,8 @@ def get_audio_files(input_paths):
                     audio_files.append(AudioTitle(
                         filepath=audio_file_path,
                         title=title,
-                        is_converted=True
+                        is_converted=True,
+                        order=(order[video_file], 0)
                     ))
                     converted_files.append(audio_file_path)
                 except Exception as e:
@@ -634,8 +645,11 @@ def get_audio_files(input_paths):
             file_types += " or video files"
         raise ValueError(f"No {file_types} found in {', '.join(input_paths)}")
 
-    # Sort by filename for consistent ordering
-    audio_files.sort(key=lambda x: x.title.lower())
+    # Order chapters the way they were given - by -i argument, then by discovery order
+    # within a folder or a downloaded playlist - rather than resorting them, so the
+    # order a source list is arranged in (the GUI lets this be rearranged) is the order
+    # they upload in.
+    audio_files.sort(key=lambda x: x.order)
 
     # Store converted files list for cleanup. Done before the duration check so that
     # anything it writes is registered even if it aborts (same list object, so appending

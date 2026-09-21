@@ -352,14 +352,19 @@ def test_keep_converted_leaves_the_truncated_copy_in_place(configure, tone_file)
 # --- get_audio_files ------------------------------------------------------
 
 @requires_ffmpeg
-def test_get_audio_files_finds_audio_and_sorts_by_title(configure, tone_file, tmp_path):
+def test_get_audio_files_preserves_folder_scan_order(configure, tone_file, tmp_path):
+    """Chapter order follows how files were found, not an alphabetical resort - see
+    test_engine_inputs.py for cross-argument ordering, and test_gui_app.py for the
+    move-up/move-down feature this enables. A single folder's own scan order
+    (find_files' sorted()) still applies within it, which happens to be
+    case-sensitive - "Zebra" before "apple"."""
     tone_file(2, "Zebra.mp3")
     tone_file(2, "apple.mp3", frequency=300)
     configure()
 
     files = tony.get_audio_files([str(tmp_path)])
 
-    assert [f.title for f in files] == ["apple", "Zebra"]
+    assert [f.title for f in files] == ["Zebra", "apple"]
 
 
 def test_get_audio_files_rejects_a_missing_directory(configure):

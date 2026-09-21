@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Move Up / Move Down buttons in the GUI's source list, next to Remove, reorder the
+  selected entries. Chapters now upload in the order the source list is arranged in,
+  rather than always being resorted alphabetically - which also means the CLI's
+  chapter order now follows the order `-i` arguments are given in, rather than being
+  alphabetized regardless of it.
+  **Consequence for existing Creative Tonies:** a Tonie's chapters were written under
+  the old alphabetical order. The first run after upgrading will see that as a real
+  difference from the current (now scan-order) file list and treat the Tonie as
+  needing an update - clearing and re-uploading it - even if the same files are
+  already there and nothing was rearranged.
+
 ### Fixed
 - An upload could fail with a confusing pydantic error ("2 validation errors for
   FileUploadRequest ... Field required") instead of a clear one. The Tonie Cloud

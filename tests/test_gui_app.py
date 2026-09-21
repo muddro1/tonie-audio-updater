@@ -14,7 +14,7 @@ import tony
 from conftest import requires_ffmpeg
 from gui import tonie_images
 from gui.app import MainWindow
-from gui.sources import SourceItem
+from gui.sources import SourceItem, resolved_paths
 
 
 class FakeTonie:
@@ -210,6 +210,139 @@ def test_removing_with_nothing_selected_does_nothing(window):
     window.remove_selected_source()
 
     assert [s.title for s in window.sources] == ["a"]
+
+
+# ------------------------------------------------------------- reordering sources
+
+def _titled_sources(window, *titles):
+    window.sources = [SourceItem(kind="file", value=f"/{t}.mp3", title=t, duration=1.0)
+                      for t in titles]
+    window.refresh_summary()
+
+
+def test_moving_one_source_up(window):
+    _titled_sources(window, "a", "b", "c")
+    _select_top_level_rows(window, [1])  # b
+
+    window.move_selected_source_up()
+
+    assert [s.title for s in window.sources] == ["b", "a", "c"]
+
+
+def test_moving_one_source_down(window):
+    _titled_sources(window, "a", "b", "c")
+    _select_top_level_rows(window, [1])  # b
+
+    window.move_selected_source_down()
+
+    assert [s.title for s in window.sources] == ["a", "c", "b"]
+
+
+def test_the_topmost_source_cannot_move_further_up(window):
+    _titled_sources(window, "a", "b", "c")
+    _select_top_level_rows(window, [0])  # a
+
+    window.move_selected_source_up()
+
+    assert [s.title for s in window.sources] == ["a", "b", "c"]
+
+
+def test_the_last_source_cannot_move_further_down(window):
+    _titled_sources(window, "a", "b", "c")
+    _select_top_level_rows(window, [2])  # c
+
+    window.move_selected_source_down()
+
+    assert [s.title for s in window.sources] == ["a", "b", "c"]
+
+
+def test_a_contiguous_block_moves_up_together_past_its_neighbor(window):
+    _titled_sources(window, "a", "b", "c", "d", "e")
+    _select_top_level_rows(window, [2, 3])  # c, d
+
+    window.move_selected_source_up()
+
+    assert [s.title for s in window.sources] == ["a", "c", "d", "b", "e"]
+
+
+def test_a_contiguous_block_moves_down_together_past_its_neighbor(window):
+    _titled_sources(window, "a", "b", "c", "d", "e")
+    _select_top_level_rows(window, [2, 3])  # c, d
+
+    window.move_selected_source_down()
+
+    assert [s.title for s in window.sources] == ["a", "b", "e", "c", "d"]
+
+
+def test_a_disjoint_selection_moves_each_source_independently(window):
+    _titled_sources(window, "a", "b", "c", "d")
+    _select_top_level_rows(window, [1, 3])  # b, d
+
+    window.move_selected_source_up()
+
+    assert [s.title for s in window.sources] == ["b", "a", "d", "c"]
+
+
+def test_a_block_pinned_to_the_top_edge_does_not_move(window):
+    """The block can't move as a whole, so nothing should shuffle at all - not even
+    the member of the block that technically has room."""
+    _titled_sources(window, "a", "b", "c")
+    _select_top_level_rows(window, [0, 1])  # a, b - a is already at the top
+
+    window.move_selected_source_up()
+
+    assert [s.title for s in window.sources] == ["a", "b", "c"]
+
+
+def test_moving_with_nothing_selected_does_nothing(window):
+    _titled_sources(window, "a", "b")
+    window.source_tree.clearSelection()
+
+    window.move_selected_source_up()
+    window.move_selected_source_down()
+
+    assert [s.title for s in window.sources] == ["a", "b"]
+
+
+def test_selecting_a_child_row_moves_its_whole_top_level_source(window):
+    folder = SourceItem(kind="folder", value="/music", title="music")
+    folder.children = [
+        SourceItem(kind="file", value="/music/x.mp3", title="x", duration=1.0),
+    ]
+    window.sources = [SourceItem(kind="file", value="/a.mp3", title="a", duration=1.0),
+                      folder]
+    window.refresh_summary()
+
+    child_row = window.source_tree.topLevelItem(1).child(0)
+    window.source_tree.clearSelection()
+    child_row.setSelected(True)
+
+    window.move_selected_source_up()
+
+    assert [s.title for s in window.sources] == ["music", "a"]
+
+
+def test_the_moved_source_stays_selected(window):
+    """So repeated clicks keep working without having to reselect each time."""
+    _titled_sources(window, "a", "b", "c")
+    _select_top_level_rows(window, [1])  # b
+
+    window.move_selected_source_up()
+
+    assert window.source_tree.topLevelItem(0).isSelected()
+    assert not window.source_tree.topLevelItem(1).isSelected()
+
+
+def test_reordering_the_list_changes_the_upload_order(window):
+    """The point of the feature: a reorder has to reach resolved_paths(), which is
+    what becomes the -i arguments get_audio_files() preserves the order of - not just
+    rearrange window.sources for its own sake."""
+    _titled_sources(window, "a", "b")
+    _select_top_level_rows(window, [1])  # b
+
+    window.move_selected_source_up()
+
+    assert resolved_paths(window.sources) == ["/b.mp3", "/a.mp3"]
 
 
 def test_upload_is_disabled_without_sources_or_tonies(window):

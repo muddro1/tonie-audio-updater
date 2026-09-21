@@ -254,6 +254,41 @@ def test_urls_and_paths_mix(configure, monkeypatch, tone_file, tmp_path):
     assert sorted(f.title for f in files) == ["Remote", "local"]
 
 
+# --------------------------------------------------------- chapter order follows input
+
+@requires_ffmpeg
+def test_the_order_of_separate_arguments_is_preserved(configure, tone_file):
+    """Titles that would sort the other way alphabetically prove this isn't a resort."""
+    later = tone_file(2, "zzz.mp3")
+    earlier = tone_file(2, "aaa.mp3", frequency=300)
+    configure()
+
+    files = tony.get_audio_files([str(later), str(earlier)])
+
+    assert [f.title for f in files] == ["zzz", "aaa"]
+
+
+@requires_ffmpeg
+def test_a_url_given_before_a_local_file_uploads_first(configure, monkeypatch, tone_file,
+                                                        tmp_path):
+    local = tone_file(2, "zzz.mp3")
+    configure("--no-duration-limit")
+    _fake_download(monkeypatch, tmp_path / "dl", ["aaa remote"])
+
+    files = tony.get_audio_files(["https://example.com/watch?v=abc", str(local)])
+
+    assert [f.title for f in files] == ["aaa remote", "zzz"]
+
+
+def test_a_playlists_internal_order_is_preserved(configure, monkeypatch, tmp_path):
+    configure("--no-duration-limit")
+    _fake_download(monkeypatch, tmp_path, ["Zebra Story", "Aardvark Story"])
+
+    files = tony.get_audio_files(["https://example.com/playlist?list=xyz"])
+
+    assert [f.title for f in files] == ["Zebra Story", "Aardvark Story"]
+
+
 def test_a_url_without_ytdlp_is_a_clear_error(configure):
     configure("--ytdlp-path", "/nonexistent/yt-dlp")
 

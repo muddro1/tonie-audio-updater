@@ -177,13 +177,18 @@ class MainWindow(QMainWindow):
         self.add_folder_button = QPushButton("Add Folder...")
         self.add_files_button = QPushButton("Add Files...")
         self.add_link_button = QPushButton("Add Link...")
+        self.move_up_button = QPushButton("Move Up")
+        self.move_down_button = QPushButton("Move Down")
         self.remove_source_button = QPushButton("Remove")
         self.add_folder_button.clicked.connect(self.choose_folder)
         self.add_files_button.clicked.connect(self.choose_files)
         self.add_link_button.clicked.connect(self.choose_link)
+        self.move_up_button.clicked.connect(self.move_selected_source_up)
+        self.move_down_button.clicked.connect(self.move_selected_source_down)
         self.remove_source_button.clicked.connect(self.remove_selected_source)
         for button in (self.add_folder_button, self.add_files_button,
-                       self.add_link_button, self.remove_source_button):
+                       self.add_link_button, self.move_up_button,
+                       self.move_down_button, self.remove_source_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         column.addLayout(buttons)
@@ -418,29 +423,75 @@ class MainWindow(QMainWindow):
         if accepted and url.strip():
             self.add_source(url.strip())
 
-    def remove_selected_source(self):
-        """Drop every whole top-level source any selected row belongs to.
+    def _selected_top_level_indices(self):
+        """Indices into self.sources for every top-level source touched by the
+        current selection.
 
-        Selecting a child row (a file inside a folder, an entry in a playlist) still
-        removes the whole top-level source it came from, exactly as selecting the
-        parent row does - Remove has never operated at finer granularity than that,
-        multi-select just lets several top-level sources go in one action instead of
-        one at a time. A source can only appear once regardless of how many of its own
-        rows were selected, so a dict keyed by id() (SourceItem has no __eq__) stands
-        in for an order-preserving set.
+        Selecting a child row (a file inside a folder, an entry in a playlist) counts
+        as selecting the whole top-level source it came from - Remove and the move
+        buttons have never operated at finer granularity than that. A source can only
+        appear once regardless of how many of its own rows were selected, since this
+        goes through a set of ids (SourceItem has no __eq__) before becoming indices.
         """
-        doomed = {}
+        selected_ids = set()
         for item in self.source_tree.selectedItems():
             while item.parent() is not None:
                 item = item.parent()
-            source = item.data(0, Qt.UserRole)
-            doomed[id(source)] = source
+            selected_ids.add(id(item.data(0, Qt.UserRole)))
 
+        return sorted(i for i, source in enumerate(self.sources)
+                     if id(source) in selected_ids)
+
+    def remove_selected_source(self):
+        """Drop every whole top-level source any selected row belongs to.
+
+        Multi-select just lets several top-level sources go in one action instead of
+        one at a time.
+        """
+        doomed = set(self._selected_top_level_indices())
         if not doomed:
             return
 
-        self.sources = [s for s in self.sources if id(s) not in doomed]
+        self.sources = [s for i, s in enumerate(self.sources) if i not in doomed]
         self.refresh_summary()
+
+    def move_selected_source_up(self):
+        self._move_selected_sources(-1)
+
+    def move_selected_source_down(self):
+        self._move_selected_sources(1)
+
+    def _move_selected_sources(self, delta):
+        """Shift every selected top-level source one place earlier (delta=-1) or
+        later (delta=1) in the list, which is also the order files upload in.
+
+        A contiguous block of selected sources moves together, past the single
+        neighbor on that side, rather than each item independently trying (and
+        failing) to swap past a sibling that is also selected and also moving -
+        skipping a swap between two selected sources, instead of skipping the whole
+        item, is what keeps the block's internal order intact while still letting
+        it slide as a unit. A disjoint selection just moves each source by itself.
+        """
+        indices = self._selected_top_level_indices()
+        if not indices:
+            return
+
+        ordered = indices if delta < 0 else list(reversed(indices))
+        moved = set(indices)
+        for i in ordered:
+            j = i + delta
+            if j < 0 or j >= len(self.sources) or j in moved:
+                continue
+            self.sources[i], self.sources[j] = self.sources[j], self.sources[i]
+            moved.discard(i)
+            moved.add(j)
+
+        self.refresh_summary()
+        self.source_tree.clearSelection()
+        for i in moved:
+            row = self.source_tree.topLevelItem(i)
+            if row is not None:
+                row.setSelected(True)
 
     def refresh_summary(self):
         """Redraw the source list from the model, then the summary and the buttons."""
