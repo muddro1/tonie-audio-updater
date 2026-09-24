@@ -867,6 +867,13 @@ def normalize_title(title):
     # Strip whitespace, convert to lowercase for comparison
     return str(title).strip().lower()
 
+def sample_titles(counts, originals, limit=3):
+    """Name a few of the titles in a Counter, and say how many were left unnamed."""
+    titles = sorted(counts.elements())
+    names = [originals.get(title, title) for title in titles[:limit]]
+    left_out = len(titles) - len(names)
+    return f"{names} and {left_out} more" if left_out else f"{names}"
+
 def needs_update(tonie, audio_files, force_update=False):
     """Check if a tonie needs updating"""
     if force_update:
@@ -904,16 +911,11 @@ def needs_update(tonie, audio_files, force_update=False):
     audio_counts = Counter(audio_titles)
     tonie_counts = Counter(tonie_titles)
     
-    missing_in_tonie = audio_counts - tonie_counts
-    extra_in_tonie = tonie_counts - audio_counts
-    
-    if missing_in_tonie:
-        names = [audio_originals.get(t, t) for t in sorted(missing_in_tonie.elements())]
-        return True, f"Missing audio files on tonie: {names[:3]}"
-    if extra_in_tonie:
-        names = [tonie_originals.get(t, t) for t in sorted(extra_in_tonie.elements())]
-        return True, f"Extra chapters on tonie: {names[:3]}"
-    return True, "Title mismatch detected"
+    # A different file count returned above, so both counters hold the same number of
+    # titles: whatever the tonie is missing, it holds just as many chapters instead
+    incoming = sample_titles(audio_counts - tonie_counts, audio_originals)
+    outgoing = sample_titles(tonie_counts - audio_counts, tonie_originals)
+    return True, f"Different files: tonie holds {outgoing}, not {incoming}"
 
 def select_tonies_by_name(tonies, tonie_households):
     """Pick the Tonie to update without the menu, for --non-interactive runs.

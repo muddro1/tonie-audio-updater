@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already there and nothing was rearranged.
 
 ### Fixed
+- The reason given for an update no longer describes a wholesale content swap as
+  "Missing audio files on tonie", which read like a failure and only named the
+  incoming files. Because an unequal file count is reported before this comparison
+  runs, the two title lists were always the same length, so a difference was always a
+  swap - the "missing" and "extra" halves could only ever be non-empty together, which
+  made the "Extra chapters on tonie" and "Title mismatch detected" branches
+  unreachable. The reason now names both sides ("Different files: tonie holds X, not
+  Y"), and says how many titles were left out when there are more than three.
 - An upload could fail with a confusing pydantic error ("2 validation errors for
   FileUploadRequest ... Field required") instead of a clear one. The Tonie Cloud
   session token is acquired once - at sign-in in the GUI, at startup on the CLI - and

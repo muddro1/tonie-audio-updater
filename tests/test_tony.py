@@ -810,6 +810,26 @@ def test_reordered_chapters_need_an_update(configure):
     assert "order" in reason.lower()
 
 
+def test_a_completely_different_set_names_both_sides(configure):
+    """The tonie's own chapters are the useful half of 'why' when everything changed."""
+    configure()
+    needed, reason = tony.needs_update(FakeTonie(chapters=["Mickey", "Donald"]),
+                                       _files("Kratts", "Kratts Two"))
+    assert needed is True
+    assert "Mickey" in reason and "Donald" in reason
+    assert "Kratts" in reason
+
+
+def test_a_long_difference_says_how_many_were_left_out(configure):
+    """Only a few titles are named, so the count has to say what was cut."""
+    configure()
+    chapters = [f"Old {n}" for n in range(5)]
+    needed, reason = tony.needs_update(FakeTonie(chapters=chapters),
+                                       _files(*[f"New {n}" for n in range(5)]))
+    assert needed is True
+    assert "2 more" in reason
+
+
 def test_duplicate_titles_are_compared_by_count(configure):
     """Sorted set comparison treated ['A','A','B'] and ['A','B','B'] as equal."""
     configure()
