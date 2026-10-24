@@ -176,3 +176,6 @@ converted_*
 # GUI build output
 build/build/
 build/dist/
+
+# SwiftUI app build output
+mac/.build/

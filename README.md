@@ -215,6 +215,21 @@ until you sign out.
 Keychain entry and the remembered username and empties the Creative Tonie list, so the
 next launch asks for credentials again.
 
+## Native SwiftUI App
+
+`mac/` holds a native SwiftUI version of the macOS app: the same window and options,
+with the whole engine (Tonie Cloud sign-in and upload, conversion, trimming, the
+duration limit) ported to Swift, so it needs no Python. FFmpeg and yt-dlp are still
+used from Homebrew. It needs macOS 14 or later and only the Xcode command line tools:
+
+```bash
+mac/build_app.sh                 # builds mac/dist/Tonie Audio Updater.app
+cd mac && swift run SelfTest     # the engine's checks, including real ffmpeg runs
+```
+
+It reads a password the Python app saved in the Keychain, and caches Tonie pictures in
+the same place.
+
 ## Silence Trimming Feature
 
 The silence trimming feature automatically detects and removes long periods of silence at the end of converted audio files, making them cleaner and more professional.

@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A native SwiftUI macOS app in `mac/`, with the engine ported to Swift - see the
+  README's "Native SwiftUI App".
+- The GUI's "Trim trailing silence" is now on by default (the CLI's
+  `--trim-silence` is unchanged).
+- A Measure Trimmed Length button in the GUI's Silence settings finds each video's
+  trailing silence ahead of time, so the Length column, the total, the 90-minute
+  check and the upload confirmation show what will actually upload. Only videos are
+  trimmed, so only videos are measured; changing the threshold or minimum clears it.
+  Finishing a measurement turns "Trim trailing silence" on; cancelling one does not.
 - Move Up / Move Down buttons in the GUI's source list, next to Remove, reorder the
   selected entries. Chapters now upload in the order the source list is arranged in,
   rather than always being resorted alphabetically - which also means the CLI's
@@ -20,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already there and nothing was rearranged.
 
 ### Fixed
+- The GUI's checkboxes for Creative Tonies and sources were invisible on macOS 26 and
+  later; both lists now use Qt's Fusion style, on every platform, which draws them.
+- Cancel no longer asks "Stop the upload?" while something other than an upload is
+  running.
 - The reason given for an update no longer describes a wholesale content swap as
   "Missing audio files on tonie", which read like a failure and only named the
   incoming files. Because an unequal file count is reported before this comparison
