@@ -906,3 +906,58 @@ def test_the_engine_is_configured_from_the_windows_own_controls(window, monkeypa
 
     assert tony.args.ffmpeg_path == "/custom/ffmpeg"
     assert tony.args.max_duration == 45.0
+
+
+def test_measuring_trim_shortens_only_videos_and_the_total(window, configure,
+                                                            monkeypatch):
+    configure()
+    window.sources = [
+        SourceItem(kind="file", value="/v/clip.mp4", title="clip", duration=600.0),
+        SourceItem(kind="file", value="/a/song.mp3", title="song", duration=60.0),
+    ]
+    measured = []
+    monkeypatch.setattr(tony, "detect_silence_end",
+                        lambda path: measured.append(path) or 300.0)
+
+    window.measure_trim()
+
+    assert measured == ["/v/clip.mp4"]        # audio is never trimmed by the engine
+    assert window.trim_silence.isChecked()
+    assert "0:06:00" in window.summary_text()
+
+    window.trim_silence.setChecked(False)
+    assert "0:11:00" in window.summary_text()
+
+    window.trim_silence.setChecked(True)
+    window.silence_threshold.setText("-40dB")  # a new setting needs a new measurement
+    assert "0:11:00" in window.summary_text()
+
+
+def test_tonie_checkboxes_are_drawn_by_fusion(window):
+    assert window.tonie_tree.style().name().lower() == "fusion"
+    assert window.source_tree.style().name().lower() == "fusion"
+
+
+def test_trimming_is_on_by_default(window):
+    assert window.trim_silence.isChecked()
+    assert window.current_state().trim_silence is True
+
+
+def test_cancelling_a_measurement_keeps_lengths_but_leaves_trim_off(window, configure,
+                                                                     monkeypatch):
+    configure()
+    window.sources = [
+        SourceItem(kind="file", value="/v/one.mp4", title="one", duration=600.0),
+        SourceItem(kind="file", value="/v/two.mp4", title="two", duration=600.0),
+    ]
+    window.trim_silence.setChecked(False)
+
+    def measure_then_cancel(path):
+        window._cancel.set()
+        return 300.0
+    monkeypatch.setattr(tony, "detect_silence_end", measure_then_cancel)
+
+    window.measure_trim()
+
+    assert window.trim_silence.isChecked() is False
+    assert [s.trimmed for s in window.sources] == [300.0, None]

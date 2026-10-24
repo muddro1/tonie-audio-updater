@@ -24,6 +24,7 @@ class SourceItem:
     value: str                      # path or URL, passed to -i when selected
     title: str
     duration: Optional[float] = None
+    trimmed: Optional[float] = None  # duration once trailing silence is cut, if measured
     children: List["SourceItem"] = field(default_factory=list)
     selected: bool = True
     error: Optional[str] = None
@@ -134,12 +135,31 @@ def resolved_paths(items):
     return [leaf.value for leaf in _leaves(items)]
 
 
-def totals(items):
+def length(item, trim=False):
+    """A leaf's seconds as it would upload: its measured trimmed length when trimming."""
+    if trim and item.trimmed is not None:
+        return item.trimmed
+    return item.duration
+
+
+def totals(items, trim=False):
     """(file count, total seconds) for everything currently ticked.
 
     An unknown duration counts toward the file count but contributes no time, so the
     total reads as a floor rather than silently pretending to be exact.
     """
     leaves = list(_leaves(items))
-    seconds = sum(leaf.duration for leaf in leaves if leaf.duration is not None)
+    seconds = sum(length(leaf, trim) for leaf in leaves
+                  if length(leaf, trim) is not None)
     return len(leaves), seconds
+
+
+def trimmable(items):
+    """Every local video leaf, ticked or not - the only files the engine trims, since
+    trimming happens during video conversion."""
+    for item in items:
+        if item.children:
+            yield from trimmable(item.children)
+        elif (not item.error and not item.is_container and not tony.is_url(item.value)
+              and os.path.splitext(item.value)[1].lower() in tony.VIDEO_EXTENSIONS):
+            yield item

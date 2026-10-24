@@ -351,6 +351,7 @@ def detect_silence_end(audio_path):
         cmd = [
             args.ffmpeg_path,
             "-i", str(audio_path),
+            "-vn",  # a video's picture is never needed here, and is slow to decode
             "-af", f"silencedetect=noise={args.silence_threshold}:d={args.min_silence_duration}",
             "-f", "null",
             "-"
