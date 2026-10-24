@@ -46,7 +46,7 @@ app = BUNDLE(
     name="Tonie Audio Updater.app",
     bundle_identifier="com.muddro1.tonie-audio-updater",
     info_plist={
-        "CFBundleShortVersionString": "5.0",
+        "CFBundleShortVersionString": "6.0",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "13.0",
     },

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0] - 2026-10-23
+
 ### Added
 - A native SwiftUI macOS app in `mac/`, with the engine ported to Swift - see the
   README's "Native SwiftUI App".
