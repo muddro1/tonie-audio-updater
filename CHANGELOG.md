@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- A native SwiftUI macOS app in `mac/`, with the engine ported to Swift - see the
+  README's "Native SwiftUI App".
+- The GUI's "Trim trailing silence" is now on by default (the CLI's
+  `--trim-silence` is unchanged).
+- A Measure Trimmed Length button in the GUI's Silence settings finds each video's
+  trailing silence ahead of time, so the Length column, the total, the 90-minute
+  check and the upload confirmation show what will actually upload. Only videos are
+  trimmed, so only videos are measured; changing the threshold or minimum clears it.
+  Finishing a measurement turns "Trim trailing silence" on; cancelling one does not.
+- Move Up / Move Down buttons in the GUI's source list, next to Remove, reorder the
+  selected entries. Chapters now upload in the order the source list is arranged in,
+  rather than always being resorted alphabetically - which also means the CLI's
+  chapter order now follows the order `-i` arguments are given in, rather than being
+  alphabetized regardless of it.
+  **Consequence for existing Creative Tonies:** a Tonie's chapters were written under
+  the old alphabetical order. The first run after upgrading will see that as a real
+  difference from the current (now scan-order) file list and treat the Tonie as
+  needing an update - clearing and re-uploading it - even if the same files are
+  already there and nothing was rearranged.
+
+### Fixed
+- The GUI's checkboxes for Creative Tonies and sources were invisible on macOS 26 and
+  later; both lists now use Qt's Fusion style, on every platform, which draws them.
+- Cancel no longer asks "Stop the upload?" while something other than an upload is
+  running.
+- The reason given for an update no longer describes a wholesale content swap as
+  "Missing audio files on tonie", which read like a failure and only named the
+  incoming files. Because an unequal file count is reported before this comparison
+  runs, the two title lists were always the same length, so a difference was always a
+  swap - the "missing" and "extra" halves could only ever be non-empty together, which
+  made the "Extra chapters on tonie" and "Title mismatch detected" branches
+  unreachable. The reason now names both sides ("Different files: tonie holds X, not
+  Y"), and says how many titles were left out when there are more than three.
+- An upload could fail with a confusing pydantic error ("2 validation errors for
+  FileUploadRequest ... Field required") instead of a clear one. The Tonie Cloud
+  session token is acquired once - at sign-in in the GUI, at startup on the CLI - and
+  by the time a run reaches its first real write, everything since (picking sources,
+  downloading and converting videos, an interactive confirmation) can have let it
+  expire. The `tonie_api` library treats an unauthorized response as an empty success
+  rather than raising, which made this worse than just a bad error message: a stale
+  token on `clear_all_chapter_of_tonie` was silently taken as "chapters cleared" even
+  though the request never reached the server, and the log said so while the old
+  chapters were, in fact, still on the Tonie. The token is now renewed before a run's
+  first write, and any 401 encountered mid-run triggers one automatic re-sign-in and
+  retry before the failure is reported.
+
 ## [5.0] - 2026-09-15
 
 ### Added

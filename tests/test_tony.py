@@ -9,6 +9,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 import tony
 from conftest import requires_ffmpeg
@@ -351,14 +352,19 @@ def test_keep_converted_leaves_the_truncated_copy_in_place(configure, tone_file)
 # --- get_audio_files ------------------------------------------------------
 
 @requires_ffmpeg
-def test_get_audio_files_finds_audio_and_sorts_by_title(configure, tone_file, tmp_path):
+def test_get_audio_files_preserves_folder_scan_order(configure, tone_file, tmp_path):
+    """Chapter order follows how files were found, not an alphabetical resort - see
+    test_engine_inputs.py for cross-argument ordering, and test_gui_app.py for the
+    move-up/move-down feature this enables. A single folder's own scan order
+    (find_files' sorted()) still applies within it, which happens to be
+    case-sensitive - "Zebra" before "apple"."""
     tone_file(2, "Zebra.mp3")
     tone_file(2, "apple.mp3", frequency=300)
     configure()
 
     files = tony.get_audio_files([str(tmp_path)])
 
-    assert [f.title for f in files] == ["apple", "Zebra"]
+    assert [f.title for f in files] == ["Zebra", "apple"]
 
 
 def test_get_audio_files_rejects_a_missing_directory(configure):
@@ -584,6 +590,132 @@ def test_a_dry_run_neither_clears_nor_uploads(configure):
     assert api.calls == []
 
 
+# --- AutoReauthAPI ----------------------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(response=self)
+
+
+class _FakeSession:
+    def __init__(self, refresh_succeeds=True):
+        self.hooks = {"response": []}
+        self.acquired = []
+        self.token = "initial-token"
+        self._refresh_succeeds = refresh_succeeds
+
+    def acquire_token(self, username, password, timeout=30):
+        self.acquired.append((username, password, timeout))
+        # Mirrors the real TonieCloudSession: a failed login leaves token as None
+        # rather than raising.
+        self.token = "renewed-token" if self._refresh_succeeds else None
+
+
+class _FlakyAPI:
+    """Raises an HTTPError shaped like a real one a set number of times, then succeeds."""
+
+    def __init__(self, fail_times=0, status_code=401, refresh_succeeds=True):
+        self.session = _FakeSession(refresh_succeeds=refresh_succeeds)
+        self.calls = 0
+        self.fail_times = fail_times
+        self.status_code = status_code
+        self.not_callable = "a plain attribute"
+
+    def do_thing(self):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise requests.exceptions.HTTPError(response=_FakeResponse(self.status_code))
+        return "ok"
+
+
+def test_a_401_triggers_one_reauth_and_a_retry():
+    api = _FlakyAPI(fail_times=1)
+    wrapped = tony.AutoReauthAPI(api, "user", "pw")
+
+    assert wrapped.do_thing() == "ok"
+    assert api.calls == 2
+    assert api.session.acquired == [("user", "pw", 30)]
+
+
+def test_a_persistent_401_is_retried_once_then_raised():
+    api = _FlakyAPI(fail_times=99)
+    wrapped = tony.AutoReauthAPI(api, "user", "pw")
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        wrapped.do_thing()
+
+    assert api.calls == 2
+    assert len(api.session.acquired) == 1
+
+
+def test_a_non_401_error_is_not_treated_as_a_stale_token():
+    api = _FlakyAPI(fail_times=1, status_code=500)
+    wrapped = tony.AutoReauthAPI(api, "user", "pw")
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        wrapped.do_thing()
+
+    assert api.calls == 1
+    assert api.session.acquired == []
+
+
+def test_the_session_gets_a_hook_that_raises_on_a_failed_response():
+    api = _FlakyAPI()
+    tony.AutoReauthAPI(api, "user", "pw")
+
+    hook = api.session.hooks["response"][0]
+    with pytest.raises(requests.exceptions.HTTPError):
+        hook(_FakeResponse(401))
+    hook(_FakeResponse(200))  # does not raise
+
+
+def test_a_hook_raises_through_a_real_requests_session(monkeypatch):
+    """The whole fix rests on a session-level response hook firing before
+    tonie_api's own `if not resp.ok: return {}` gets a chance to swallow it -
+    proven here against the real requests machinery, not a stand-in for it."""
+    from requests.adapters import HTTPAdapter
+
+    resp = requests.Response()
+    resp.status_code = 401
+    monkeypatch.setattr(HTTPAdapter, "send", lambda self, req, **kw: resp)
+
+    api = SimpleNamespace(session=requests.Session())
+    tony.AutoReauthAPI(api, "user", "pw")
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        api.session.get("https://example.invalid/x")
+
+
+def test_a_refresh_that_fails_to_sign_in_again_raises_clearly():
+    """acquire_token() swallows its own errors and leaves token as None rather than
+    raising - unchecked, that would send `Authorization: Bearer None` and reproduce
+    the same 401-shows-up-as-something-else confusion this class exists to fix."""
+    api = _FlakyAPI(fail_times=99, refresh_succeeds=False)
+    wrapped = tony.AutoReauthAPI(api, "user", "pw")
+
+    with pytest.raises(ValueError, match="sign in"):
+        wrapped.do_thing()
+
+    assert api.calls == 1  # never got to retry - the reauth itself failed
+
+
+def test_wrapping_something_without_a_session_does_not_crash():
+    wrapped = tony.AutoReauthAPI(object(), "user", "pw")
+
+    wrapped.refresh_token()
+
+
+def test_non_callable_attributes_pass_through_unwrapped():
+    api = _FlakyAPI()
+    wrapped = tony.AutoReauthAPI(api, "user", "pw")
+
+    assert wrapped.not_callable == "a plain attribute"
+
+
 # --- selecting a tonie without the menu -----------------------------------
 
 def test_select_tonie_by_exact_name(configure):
@@ -676,6 +808,26 @@ def test_reordered_chapters_need_an_update(configure):
                                        _files("One", "Two"))
     assert needed is True
     assert "order" in reason.lower()
+
+
+def test_a_completely_different_set_names_both_sides(configure):
+    """The tonie's own chapters are the useful half of 'why' when everything changed."""
+    configure()
+    needed, reason = tony.needs_update(FakeTonie(chapters=["Mickey", "Donald"]),
+                                       _files("Kratts", "Kratts Two"))
+    assert needed is True
+    assert "Mickey" in reason and "Donald" in reason
+    assert "Kratts" in reason
+
+
+def test_a_long_difference_says_how_many_were_left_out(configure):
+    """Only a few titles are named, so the count has to say what was cut."""
+    configure()
+    chapters = [f"Old {n}" for n in range(5)]
+    needed, reason = tony.needs_update(FakeTonie(chapters=chapters),
+                                       _files(*[f"New {n}" for n in range(5)]))
+    assert needed is True
+    assert "2 more" in reason
 
 
 def test_duplicate_titles_are_compared_by_count(configure):

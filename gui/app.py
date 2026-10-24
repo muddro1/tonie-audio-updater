@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-                               QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem,
+                               QSpinBox, QSplitter, QStyleFactory, QTreeWidget,
+                               QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
 import tony
@@ -34,6 +35,13 @@ def _upload_job(api, tonies, households, should_cancel):
     """
     audio_files = tony.get_audio_files(tony.args.input_paths)
     try:
+        # Renew the session token before the first real write. It was acquired back
+        # at sign-in, and everything since - picking sources, downloading and
+        # converting - can easily outlast Tonie Cloud's short-lived tokens.
+        if not tony.args.dry_run:
+            refresh = getattr(api, "refresh_token", None)
+            if refresh is not None:
+                refresh()
         return run.upload_to_tonies(api, tonies, households, audio_files, should_cancel)
     finally:
         tony.cleanup_converted_files()
@@ -62,6 +70,21 @@ def _expand_all(values):
     return items
 
 
+def _measure_trim(items, should_cancel):
+    """Each video's length once its trailing silence is cut, the way the engine cuts it.
+
+    A full decode per file, so it stops between files when Cancel is pressed.
+    """
+    lengths = []
+    for item in items:
+        if should_cancel():
+            break
+        logging.info(f"Measuring trailing silence: {item.title}")
+        point = tony.detect_silence_end(item.value)
+        lengths.append(point if point is not None else item.duration)
+    return lengths
+
+
 def _failed_source(value, reason):
     """A source that could not be expanded, in the shape gui.sources uses for one."""
     if tony.is_url(value):
@@ -85,7 +108,7 @@ def _sign_in_job(username, password):
     # Imported here so the GUI can be imported without the dependency installed
     from tonie_api.api import TonieAPI
 
-    api = TonieAPI(username, password)
+    api = tony.AutoReauthAPI(TonieAPI(username, password), username, password)
     tonies, households = tony.get_all_creative_tonies(api)
     image_paths = tonie_images.fetch_all(tonies)
     return api, tonies, households, image_paths
@@ -170,13 +193,18 @@ class MainWindow(QMainWindow):
         self.add_folder_button = QPushButton("Add Folder...")
         self.add_files_button = QPushButton("Add Files...")
         self.add_link_button = QPushButton("Add Link...")
+        self.move_up_button = QPushButton("Move Up")
+        self.move_down_button = QPushButton("Move Down")
         self.remove_source_button = QPushButton("Remove")
         self.add_folder_button.clicked.connect(self.choose_folder)
         self.add_files_button.clicked.connect(self.choose_files)
         self.add_link_button.clicked.connect(self.choose_link)
+        self.move_up_button.clicked.connect(self.move_selected_source_up)
+        self.move_down_button.clicked.connect(self.move_selected_source_down)
         self.remove_source_button.clicked.connect(self.remove_selected_source)
         for button in (self.add_folder_button, self.add_files_button,
-                       self.add_link_button, self.remove_source_button):
+                       self.add_link_button, self.move_up_button,
+                       self.move_down_button, self.remove_source_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         column.addLayout(buttons)
@@ -184,6 +212,7 @@ class MainWindow(QMainWindow):
         self.source_tree = QTreeWidget()
         self.source_tree.setHeaderLabels(["Title", "Length"])
         self.source_tree.setRootIsDecorated(True)
+        self.source_tree.setStyle(self._tree_style())
         self.source_tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.source_tree.itemChanged.connect(self._source_item_changed)
         column.addWidget(self.source_tree, 1)
@@ -210,9 +239,18 @@ class MainWindow(QMainWindow):
         self.tonie_tree = QTreeWidget()
         self.tonie_tree.setHeaderLabels(["Tonie", "Household", "Chapters"])
         self.tonie_tree.setRootIsDecorated(False)
+        self.tonie_tree.setStyle(self._tree_style())
         self.tonie_tree.itemChanged.connect(lambda *_: self._refresh_actions())
         column.addWidget(self.tonie_tree, 1)
         return box
+
+    def _tree_style(self):
+        """Fusion, for the trees only: the native macOS style (Qt 6.11 on macOS 26 and
+        later) leaves room for an item's checkbox but never draws it."""
+        if not hasattr(self, "_fusion"):
+            self._fusion = QStyleFactory.create("Fusion")
+            self._fusion.setParent(self)  # setStyle() does not take ownership
+        return self._fusion
 
     def _build_advanced(self):
         """A collapsed disclosure holding the options the CLI exposes as flags."""
@@ -258,6 +296,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout(box)
 
         self.trim_silence = QCheckBox("Trim trailing silence")
+        self.trim_silence.setChecked(True)
         self.silence_threshold = QLineEdit("-50dB")
         self.min_silence_duration = QDoubleSpinBox()
         self.min_silence_duration.setRange(0.0, 60.0)
@@ -269,6 +308,18 @@ class MainWindow(QMainWindow):
         form.addRow(self.trim_silence)
         form.addRow("Threshold", self.silence_threshold)
         form.addRow("Minimum", self.min_silence_duration)
+
+        self.measure_trim_button = QPushButton("Measure Trimmed Length")
+        self.measure_trim_button.setToolTip(
+            "Find each video's trailing silence now, so the totals show what will "
+            "upload. Only videos are trimmed.")
+        self.measure_trim_button.clicked.connect(self.measure_trim)
+        form.addRow(self.measure_trim_button)
+
+        self.trim_silence.toggled.connect(lambda *_: self.refresh_summary())
+        # A measurement only holds for the settings it was taken with
+        self.silence_threshold.textChanged.connect(lambda *_: self._forget_trim())
+        self.min_silence_duration.valueChanged.connect(lambda *_: self._forget_trim())
         return box
 
     def _build_limits_group(self):
@@ -411,29 +462,75 @@ class MainWindow(QMainWindow):
         if accepted and url.strip():
             self.add_source(url.strip())
 
-    def remove_selected_source(self):
-        """Drop every whole top-level source any selected row belongs to.
+    def _selected_top_level_indices(self):
+        """Indices into self.sources for every top-level source touched by the
+        current selection.
 
-        Selecting a child row (a file inside a folder, an entry in a playlist) still
-        removes the whole top-level source it came from, exactly as selecting the
-        parent row does - Remove has never operated at finer granularity than that,
-        multi-select just lets several top-level sources go in one action instead of
-        one at a time. A source can only appear once regardless of how many of its own
-        rows were selected, so a dict keyed by id() (SourceItem has no __eq__) stands
-        in for an order-preserving set.
+        Selecting a child row (a file inside a folder, an entry in a playlist) counts
+        as selecting the whole top-level source it came from - Remove and the move
+        buttons have never operated at finer granularity than that. A source can only
+        appear once regardless of how many of its own rows were selected, since this
+        goes through a set of ids (SourceItem has no __eq__) before becoming indices.
         """
-        doomed = {}
+        selected_ids = set()
         for item in self.source_tree.selectedItems():
             while item.parent() is not None:
                 item = item.parent()
-            source = item.data(0, Qt.UserRole)
-            doomed[id(source)] = source
+            selected_ids.add(id(item.data(0, Qt.UserRole)))
 
+        return sorted(i for i, source in enumerate(self.sources)
+                     if id(source) in selected_ids)
+
+    def remove_selected_source(self):
+        """Drop every whole top-level source any selected row belongs to.
+
+        Multi-select just lets several top-level sources go in one action instead of
+        one at a time.
+        """
+        doomed = set(self._selected_top_level_indices())
         if not doomed:
             return
 
-        self.sources = [s for s in self.sources if id(s) not in doomed]
+        self.sources = [s for i, s in enumerate(self.sources) if i not in doomed]
         self.refresh_summary()
+
+    def move_selected_source_up(self):
+        self._move_selected_sources(-1)
+
+    def move_selected_source_down(self):
+        self._move_selected_sources(1)
+
+    def _move_selected_sources(self, delta):
+        """Shift every selected top-level source one place earlier (delta=-1) or
+        later (delta=1) in the list, which is also the order files upload in.
+
+        A contiguous block of selected sources moves together, past the single
+        neighbor on that side, rather than each item independently trying (and
+        failing) to swap past a sibling that is also selected and also moving -
+        skipping a swap between two selected sources, instead of skipping the whole
+        item, is what keeps the block's internal order intact while still letting
+        it slide as a unit. A disjoint selection just moves each source by itself.
+        """
+        indices = self._selected_top_level_indices()
+        if not indices:
+            return
+
+        ordered = indices if delta < 0 else list(reversed(indices))
+        moved = set(indices)
+        for i in ordered:
+            j = i + delta
+            if j < 0 or j >= len(self.sources) or j in moved:
+                continue
+            self.sources[i], self.sources[j] = self.sources[j], self.sources[i]
+            moved.discard(i)
+            moved.add(j)
+
+        self.refresh_summary()
+        self.source_tree.clearSelection()
+        for i in moved:
+            row = self.source_tree.topLevelItem(i)
+            if row is not None:
+                row.setSelected(True)
 
     def refresh_summary(self):
         """Redraw the source list from the model, then the summary and the buttons."""
@@ -469,14 +566,52 @@ class MainWindow(QMainWindow):
             row.addChild(self._source_row(child))
         return row
 
-    @staticmethod
-    def _length_of(source):
+    def _length_of(self, source):
         if source.children:
-            _, seconds = sources_model.totals([source])
+            _, seconds = self._totals([source])
             return tony.format_duration(seconds)
-        if source.duration is None:
+        seconds = sources_model.length(source, self.trim_silence.isChecked())
+        if seconds is None:
             return ""
-        return tony.format_duration(source.duration)
+        return tony.format_duration(seconds)
+
+    def _totals(self, items=None):
+        """Count and seconds, using trimmed lengths wherever they have been measured."""
+        return sources_model.totals(self.sources if items is None else items,
+                                    self.trim_silence.isChecked())
+
+    def measure_trim(self):
+        """Measure the trailing silence of every video in the list, in the background."""
+        items = list(sources_model.trimmable(self.sources))
+        if not items:
+            self.show_banner("Only videos are trimmed, and there are none in the list.")
+            return None
+        if self._is_busy():
+            self.show_banner("Something is already running.")
+            return None
+
+        self._configure_engine([item.value for item in items])
+        self._cancel.clear()
+        self.set_running(True)
+
+        def measured(lengths):
+            for item, seconds in zip(items, lengths):
+                item.trimmed = seconds
+            if self._cancel.is_set():
+                self.refresh_summary()  # keep what was measured, but don't opt in
+                return
+            self.trim_silence.setChecked(True)
+            self.refresh_summary()
+
+        started = self._start(_measure_trim, items, self._cancel.is_set, on_done=measured)
+        if started is None or not self._wants_worker():
+            self.set_running(False)
+        return started
+
+    def _forget_trim(self):
+        for item in sources_model.trimmable(self.sources):
+            item.trimmed = None
+        self.refresh_summary()
 
     def _source_item_changed(self, item, column):
         """A tick in the tree, written back to the model it came from."""
@@ -499,7 +634,7 @@ class MainWindow(QMainWindow):
 
     def summary_text(self):
         """How much is ticked, in the same words the engine would use."""
-        count, seconds = sources_model.totals(self.sources)
+        count, seconds = self._totals()
         if not count:
             return "No files selected"
 
@@ -513,7 +648,7 @@ class MainWindow(QMainWindow):
         state = self.current_state()
         if state.no_duration_limit:
             return False
-        _, seconds = sources_model.totals(self.sources)
+        _, seconds = self._totals()
         return seconds > state.max_duration * 60
 
     def _update_summary(self):
@@ -820,7 +955,7 @@ class MainWindow(QMainWindow):
         """
         state = self.current_state()
         selected = self.selected_tonies()
-        count, seconds = sources_model.totals(self.sources)
+        count, seconds = self._totals()
 
         titles = self._preview_audio_titles()
         clearing = sum(len(tony.existing_chapter_titles(t)) for t in selected)
@@ -966,7 +1101,8 @@ class MainWindow(QMainWindow):
         that no Tonie is holding, which is the case while a sign-in or an expansion is
         the work being cancelled.
         """
-        if self._is_busy() and not self._confirm_cancel():
+        uploading = self._is_busy() and self._worker._fn is _upload_job
+        if uploading and not self._confirm_cancel():
             return
         self._cancel.set()
         if self._worker is not None:

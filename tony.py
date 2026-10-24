@@ -24,7 +24,8 @@ class AudioTitle:
     is_capped: bool = False  # Track if this was truncated to the duration limit
     is_downloaded: bool = False  # Track if this was fetched from a link
     duration: Optional[float] = None  # Duration in seconds, when known
-    
+    order: tuple = (0, 0)  # Position to upload in - see get_audio_files()
+
     def __eq__(self, other):
         return self.title == other.title
 
@@ -350,6 +351,7 @@ def detect_silence_end(audio_path):
         cmd = [
             args.ffmpeg_path,
             "-i", str(audio_path),
+            "-vn",  # a video's picture is never needed here, and is slow to decode
             "-af", f"silencedetect=noise={args.silence_threshold}:d={args.min_silence_duration}",
             "-f", "null",
             "-"
@@ -495,16 +497,21 @@ def convert_video_to_audio(video_path, output_dir=None):
         raise
 
 def collect_input_files(input_paths):
-    """Expand the -i arguments into (audio_paths, video_paths, urls).
+    """Expand the -i arguments into (audio_paths, video_paths, urls, order).
 
     A directory is scanned. A file named directly is taken as given, provided its
     extension is one we handle. A link is set aside for downloading rather than
     treated as a path. Order is preserved and duplicates are dropped, so naming a
     file twice, or naming a file inside a directory also given, uploads it once.
+
+    order maps each returned path or URL to the position it was found in, across all
+    three buckets together - get_audio_files() uses it so the final chapter order
+    matches the order things were given in, rather than an alphabetical resort.
     """
     audio_paths = []
     video_paths = []
     urls = []
+    order = {}
     seen = set()
 
     def remember(path, bucket):
@@ -513,11 +520,13 @@ def collect_input_files(input_paths):
             return
         seen.add(resolved)
         bucket.append(path)
+        order[path] = len(order)
 
     for raw in input_paths:
         if is_url(raw):
             if raw not in urls:
                 urls.append(raw)
+                order[raw] = len(order)
             continue
 
         if os.path.isdir(raw):
@@ -541,20 +550,21 @@ def collect_input_files(input_paths):
                 f"{', '.join(AUDIO_EXTENSIONS)}; video: {', '.join(VIDEO_EXTENSIONS)}"
             )
 
-    return audio_paths, video_paths, urls
+    return audio_paths, video_paths, urls, order
 
 def get_audio_files(input_paths):
     """Get all audio files from the input paths, optionally converting video files"""
     audio_files = []
     converted_files = []  # Track converted files for cleanup
 
-    audio_paths, video_paths, urls = collect_input_files(input_paths)
+    audio_paths, video_paths, urls, order = collect_input_files(input_paths)
 
     for audio_file in audio_paths:
         title = os.path.splitext(os.path.basename(audio_file))[0]
         # Truncate title to 100 characters
         title = truncate_title(title, 100)
-        audio_files.append(AudioTitle(filepath=audio_file, title=title))
+        audio_files.append(AudioTitle(filepath=audio_file, title=title,
+                                      order=(order[audio_file], 0)))
 
     # Fetch links
     if urls:
@@ -569,10 +579,11 @@ def get_audio_files(input_paths):
         logging.info(f"Downloading {len(urls)} link(s) to {download_dir}")
 
         for url in urls:
-            for item in download_url(url, download_dir):
+            for position, item in enumerate(download_url(url, download_dir)):
                 title = truncate_title(item["title"], 100)
                 audio_files.append(AudioTitle(filepath=item["filepath"], title=title,
-                                              is_downloaded=True))
+                                              is_downloaded=True,
+                                              order=(order[url], position)))
                 converted_files.append(item["filepath"])
                 logging.info(f"Downloaded: {title}")
 
@@ -621,7 +632,8 @@ def get_audio_files(input_paths):
                     audio_files.append(AudioTitle(
                         filepath=audio_file_path,
                         title=title,
-                        is_converted=True
+                        is_converted=True,
+                        order=(order[video_file], 0)
                     ))
                     converted_files.append(audio_file_path)
                 except Exception as e:
@@ -634,8 +646,11 @@ def get_audio_files(input_paths):
             file_types += " or video files"
         raise ValueError(f"No {file_types} found in {', '.join(input_paths)}")
 
-    # Sort by filename for consistent ordering
-    audio_files.sort(key=lambda x: x.title.lower())
+    # Order chapters the way they were given - by -i argument, then by discovery order
+    # within a folder or a downloaded playlist - rather than resorting them, so the
+    # order a source list is arranged in (the GUI lets this be rearranged) is the order
+    # they upload in.
+    audio_files.sort(key=lambda x: x.order)
 
     # Store converted files list for cleanup. Done before the duration check so that
     # anything it writes is registered even if it aborts (same list object, so appending
@@ -853,6 +868,13 @@ def normalize_title(title):
     # Strip whitespace, convert to lowercase for comparison
     return str(title).strip().lower()
 
+def sample_titles(counts, originals, limit=3):
+    """Name a few of the titles in a Counter, and say how many were left unnamed."""
+    titles = sorted(counts.elements())
+    names = [originals.get(title, title) for title in titles[:limit]]
+    left_out = len(titles) - len(names)
+    return f"{names} and {left_out} more" if left_out else f"{names}"
+
 def needs_update(tonie, audio_files, force_update=False):
     """Check if a tonie needs updating"""
     if force_update:
@@ -890,16 +912,11 @@ def needs_update(tonie, audio_files, force_update=False):
     audio_counts = Counter(audio_titles)
     tonie_counts = Counter(tonie_titles)
     
-    missing_in_tonie = audio_counts - tonie_counts
-    extra_in_tonie = tonie_counts - audio_counts
-    
-    if missing_in_tonie:
-        names = [audio_originals.get(t, t) for t in sorted(missing_in_tonie.elements())]
-        return True, f"Missing audio files on tonie: {names[:3]}"
-    if extra_in_tonie:
-        names = [tonie_originals.get(t, t) for t in sorted(extra_in_tonie.elements())]
-        return True, f"Extra chapters on tonie: {names[:3]}"
-    return True, "Title mismatch detected"
+    # A different file count returned above, so both counters hold the same number of
+    # titles: whatever the tonie is missing, it holds just as many chapters instead
+    incoming = sample_titles(audio_counts - tonie_counts, audio_originals)
+    outgoing = sample_titles(tonie_counts - audio_counts, tonie_originals)
+    return True, f"Different files: tonie holds {outgoing}, not {incoming}"
 
 def select_tonies_by_name(tonies, tonie_households):
     """Pick the Tonie to update without the menu, for --non-interactive runs.
@@ -1124,6 +1141,73 @@ def existing_chapter_titles(tonie):
         return []
     return [getattr(chapter, 'title', 'Untitled') for chapter in tonie.chapters]
 
+class AutoReauthAPI:
+    """Wraps a TonieAPI so an expired session token is quietly renewed.
+
+    Tonie Cloud issues short-lived access tokens, acquired once (at CLI startup, or
+    at GUI sign-in) and then reused for whatever comes next - browsing sources,
+    downloading and converting several YouTube videos - so the token can easily be
+    stale by the time the first real write happens.
+
+    Worse, the tonie_api library treats a failed request as an empty success rather
+    than raising: a 401 on clear_all_chapter_of_tonie() is silently taken as
+    "chapters cleared" (they are not - the request never reached the server) and
+    everywhere else it eventually surfaces as a pydantic validation error on an
+    empty dict, with no hint that the real cause was authentication.
+
+    A response hook on the session turns any non-2xx response into a real
+    HTTPError; __getattr__ below catches a 401 specifically, signs in again, and
+    retries the call once before giving up.
+    """
+
+    def __init__(self, api, username, password, timeout=30):
+        self._api = api
+        self._username = username
+        self._password = password
+        self._timeout = timeout
+
+        session = getattr(api, "session", None)
+        if session is not None:
+            session.hooks.setdefault("response", []).append(self._raise_for_status)
+
+    @staticmethod
+    def _raise_for_status(response, *args, **kwargs):
+        response.raise_for_status()
+
+    def refresh_token(self):
+        """Sign in again, replacing whatever token is currently held.
+
+        acquire_token() swallows its own failures (a timeout, a rejected password)
+        and just leaves session.token as None rather than raising, the same way
+        TonieAPI.__init__ has to check for it explicitly. Left unchecked here, a
+        failed refresh would send `Authorization: Bearer None` and reproduce the
+        very 401-shows-up-as-something-else confusion this class exists to fix.
+        """
+        session = getattr(self._api, "session", None)
+        if session is None:
+            return
+        session.acquire_token(self._username, self._password, timeout=self._timeout)
+        if session.token is None:
+            raise ValueError("Could not sign in to Tonie Cloud again - "
+                             "check credentials and network.")
+
+    def __getattr__(self, name):
+        attr = getattr(self._api, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            import requests
+            try:
+                return attr(*args, **kwargs)
+            except requests.exceptions.HTTPError as e:
+                if e.response is None or e.response.status_code != 401:
+                    raise
+                logging.warning("Tonie Cloud session expired; signing in again")
+                self.refresh_token()
+                return getattr(self._api, name)(*args, **kwargs)
+        return call
+
 def upload_with_retries(tonie_api, tonie, audio_file):
     """Upload one file, retrying a transient failure.
 
@@ -1235,7 +1319,7 @@ def main(argv=None):
 
         # Initialize Tonie API
         print("Connecting to Tonie API...")
-        tonie_api = TonieAPI(username, password)
+        tonie_api = AutoReauthAPI(TonieAPI(username, password), username, password)
         
         # Get audio files
         print(f"Scanning for audio files in: {', '.join(args.input_paths)}")
@@ -1305,6 +1389,12 @@ def main(argv=None):
             cleanup_converted_files()
             return
         
+        # Renew the session token before the first real write. Everything since it was
+        # acquired - scanning input, downloading/converting, any interactive prompts
+        # above - can easily outlast Tonie Cloud's short-lived tokens.
+        if not args.dry_run and updates_needed:
+            tonie_api.refresh_token()
+
         # Perform updates
         print("\n" + "="*70)
         print(f"{'DRY RUN - PREVIEW' if args.dry_run else 'STARTING UPDATES'}")
