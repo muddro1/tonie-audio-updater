@@ -83,8 +83,10 @@ func gather(_ leaves: [SourceNode], into prepared: PreparedAudio, _ o: Options, 
                 log("Downloaded: \(item.title)")
             }
         } else if isVideo(leaf.value) {
-            // Kept files go beside their video; otherwise one temp directory for all
-            let dir = o.keepConverted ? (leaf.value as NSString).deletingLastPathComponent
+            // Kept files go in a "converted" folder beside their video - not beside the
+            // video itself, where the next folder scan would take the MP3 as audio and
+            // convert the video again, one more chapter a run. Otherwise one temp dir.
+            let dir = o.keepConverted ? join((leaf.value as NSString).deletingLastPathComponent, "converted")
                                       : (convertDir ?? makeTempDir("tonie_converted_"))
             if !o.keepConverted { convertDir = dir }
             do {
@@ -310,7 +312,7 @@ func updateTonie(_ cloud: TonieCloud, _ tonie: CreativeTonie, household: String,
         }
         log("Uploading (\(i + 1)/\(audio.count)): \(file.title)\(file.notes)")
         do {
-            try await uploadWithRetries(cloud, file, to: tonie, o, log: log)
+            try await uploadWithRetries(cloud, file, to: tonie, uploadedBefore: i, o, log: log)
         } catch {
             log("'\(tonie.name)' is now incomplete: \(i) of \(audio.count) files uploaded")
             if !previous.isEmpty {
@@ -324,8 +326,12 @@ func updateTonie(_ cloud: TonieCloud, _ tonie: CreativeTonie, household: String,
 }
 
 /// The Tonie is already cleared by now, so a dropped connection is worth a few tries.
+///
+/// An upload's last step adds the chapter. If that reached the server but its answer
+/// was lost, sending the file again would add it twice - so before a retry, look at how
+/// many chapters the Tonie holds. Any doubt counts as not landed.
 func uploadWithRetries(_ cloud: TonieCloud, _ file: AudioTitle, to tonie: CreativeTonie,
-                       _ o: Options, log: Log) async throws {
+                       uploadedBefore: Int, _ o: Options, log: Log) async throws {
     let attempts = max(1, o.uploadRetries)
     var delay = o.retryDelay
     for attempt in 1...attempts {
@@ -333,6 +339,11 @@ func uploadWithRetries(_ cloud: TonieCloud, _ file: AudioTitle, to tonie: Creati
             try await cloud.upload(file.path, title: file.title, to: tonie)
             return
         } catch {
+            if let held = try? await cloud.chapterCount(tonie), held > uploadedBefore {
+                log("Upload of '\(file.title)' reported an error (\(error.localizedDescription)), "
+                    + "but the chapter is on the Tonie - not sending it again")
+                return
+            }
             if attempt == attempts {
                 log("Giving up on '\(file.title)' after \(attempts) attempts: \(error.localizedDescription)")
                 throw error

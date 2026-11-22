@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- The Qt (PySide6) desktop app in `gui/`, its PyInstaller build and its tests. The
+  SwiftUI app in `mac/` is the macOS app now; `tony.py` remains the command line.
+
+### Fixed
+- The CLI now exits with code 1 when any Creative Tonie fails to update, so a
+  `--non-interactive` run from cron no longer reports success for a Tonie it left
+  cleared.
+- With "keep converted files", a converted video's MP3 is saved in a `converted`
+  folder beside the video rather than beside it. Kept beside it, the next scan of the
+  folder picked the MP3 up as audio and converted the video again, adding one more
+  copy of the chapter every run. Earlier kept copies beside a video are not moved;
+  delete them by hand.
+- A failed upload is no longer retried when its chapter reached the Tonie anyway (the
+  server applied it but the answer was lost), which added the chapter twice.
+
 ## [6.0] - 2026-10-23
 
 ### Added

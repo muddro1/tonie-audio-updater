@@ -12,6 +12,14 @@ func check(_ ok: Bool, _ what: String, line: Int = #line) {
 }
 let quiet: Log = { _ in }
 
+/// Run async engine code to completion. Top-level await would make every global here
+/// main-actor isolated, and the engine's @Sendable callbacks would warn about it.
+func blocking(_ body: @escaping @Sendable () async -> Void) {
+    let done = DispatchSemaphore(value: 0)
+    Task.detached { await body(); done.signal() }
+    done.wait()
+}
+
 // Formatting and titles
 check(formatDuration(3725.4) == "1:02:05", "formatDuration")
 check(truncateTitle("short") == "short", "short title untouched")
@@ -95,7 +103,98 @@ if ffmpegAvailable(o) {
 } else {
     print("skipped the ffmpeg checks: ffmpeg not found")
 }
+
+// Kept conversions go in a "converted" folder, so a second run does not take the MP3
+// as more audio and convert the video again
+if ffmpegAvailable(o) {
+    var keep = Options()
+    keep.keepConverted = true
+    keep.noDurationLimit = true
+    let shelf = makeTempDir("tonie_selftest_keep_")
+    _ = try runTool("ffmpeg", ["-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=2",
+                               "-c:a", "aac", join(shelf, "Story.mp4")])
+    let runs = try (1...2).map { _ in
+        try prepareAudio(uploadLeaves([expandSource(shelf, keep)]), keep, log: quiet,
+                         cancel: CancelFlag()).files
+    }
+    check(runs.allSatisfy { $0.map(\.title) == ["Story"] }, "a kept conversion is not uploaded twice")
+    check(runs[0].first.map { ($0.path as NSString).deletingLastPathComponent } == join(shelf, "converted"),
+          "kept conversions go in a converted folder")
+    try? FileManager.default.removeItem(atPath: shelf)
+}
 try? FileManager.default.removeItem(atPath: tmp)
+
+// Tonie Cloud, through a stubbed network: what the server answers decides what happens
+final class Stub: URLProtocol {
+    static var answer: (URLRequest) -> (Int, String) = { _ in (500, "") }
+    static var seen: [String] = []
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Stub.seen.append("\(request.httpMethod ?? "") \(request.url!.host ?? "")\(request.url!.path)")
+        let (status, body) = Stub.answer(request)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status,
+                                                               httpVersion: nil, headerFields: nil)!,
+                            cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+func stubbedCloud() -> TonieCloud {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [Stub.self]
+    Stub.seen = []
+    return TonieCloud(username: "u", password: "p", configuration: config)
+}
+
+Stub.answer = { _ in (500, "") }
+blocking {
+    do {
+        try await stubbedCloud().call("GET", "households")
+        check(false, "an error answer throws")
+    } catch {}
+}
+
+var expired = true
+Stub.answer = { request in
+    if request.url!.host == "login.tonies.com" { return (200, #"{"access_token":"fresh"}"#) }
+    if expired { expired = false; return (401, "") }
+    return (200, "[]")
+}
+let reauthed = stubbedCloud()
+blocking { _ = try? await reauthed.call("GET", "households") }
+check(Stub.seen == ["GET api.tonie.cloud/v2/households", "POST login.tonies.com/auth/realms/tonies/protocol/openid-connect/token",
+                    "GET api.tonie.cloud/v2/households"], "a 401 signs in again and retries once")
+
+// The chapter is added, but its answer is lost: the retry must not add it again
+var chapters = 0
+Stub.answer = { request in
+    switch (request.httpMethod!, request.url!.path) {
+    case ("POST", "/v2/file"):
+        return (200, #"{"fileId":"f1","request":{"url":"https://s3.test/","fields":{"key":"k1"}}}"#)
+    case ("POST", "/"): return (204, "")
+    case ("POST", let path) where path.hasSuffix("/chapters"):
+        chapters += 1
+        return (500, "")
+    case (_, "/v2/households"): return (200, #"[{"id":"h1","name":"Home"}]"#)
+    case (_, let path) where path.hasSuffix("/creativetonies"):
+        let held = Array(repeating: #"{"title":"One"}"#, count: chapters).joined(separator: ",")
+        return (200, #"[{"id":"t1","householdId":"h1","name":"Lion","chapters":["# + held + "]}]")
+    default: return (404, "")
+    }
+}
+let audioFile = join(NSTemporaryDirectory(), "tonie_selftest_\(UUID().uuidString).mp3")
+try Data("AUDIO".utf8).write(to: URL(fileURLWithPath: audioFile))
+let lion = CreativeTonie(id: "t1", householdId: "h1", name: "Lion", imageUrl: nil, chapters: [])
+var retrying = Options()
+retrying.retryDelay = 0
+blocking {
+    try? await uploadWithRetries(stubbedCloud(), AudioTitle(path: audioFile, title: "One"), to: lion,
+                                 uploadedBefore: 0, retrying, log: quiet)
+}
+check(chapters == 1, "a retry does not add a chapter that already landed")
+try? FileManager.default.removeItem(atPath: audioFile)
 
 print(failures == 0 ? "All checks passed" : "\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)

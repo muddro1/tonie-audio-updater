@@ -1,6 +1,6 @@
 import Foundation
 
-/// Every setting the Qt window's Advanced section exposes, with the same defaults -
+/// Every setting the window's Advanced section exposes, with the CLI's defaults -
 /// except trimming, which the app has on by default.
 public struct Options: Sendable {
     public var ffmpegPath = "ffmpeg"

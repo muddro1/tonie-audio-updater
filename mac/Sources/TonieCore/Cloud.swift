@@ -37,10 +37,11 @@ public final class TonieCloud: @unchecked Sendable {
     private var token: String?
     private let session: URLSession
 
-    public init(username: String, password: String) {
+    /// configuration is only ever passed by the self-test, to stub the network.
+    public init(username: String, password: String,
+                configuration config: URLSessionConfiguration = .ephemeral) {
         self.username = username
         self.password = password
-        let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         session = URLSession(configuration: config)
     }
@@ -106,6 +107,11 @@ public final class TonieCloud: @unchecked Sendable {
             }
         }
         return (tonies, names)
+    }
+
+    /// How many chapters Tonie Cloud says this Tonie holds now, or nil if not found.
+    func chapterCount(_ tonie: CreativeTonie) async throws -> Int? {
+        try await creativeTonies().0.first { $0.id == tonie.id }?.chapters.count
     }
 
     func toniePath(_ tonie: CreativeTonie) -> String {
@@ -177,7 +183,7 @@ func multipartBody(fields: [String: String], filename: String, file: String,
     return body
 }
 
-/// A Tonie's picture, cached on disk - in the same place the Qt app caches it - since
+/// A Tonie's picture, cached on disk, since
 /// a figure's artwork never changes. Any failure just means no picture.
 public func tonieImage(_ tonie: CreativeTonie) async -> URL? {
     let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]

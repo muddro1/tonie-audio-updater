@@ -16,7 +16,7 @@ from argparse import ArgumentParser
 from dataclasses import dataclass
 from typing import Optional
 
-@dataclass(eq=False)
+@dataclass
 class AudioTitle:
     filepath: str
     title: str
@@ -25,13 +25,6 @@ class AudioTitle:
     is_downloaded: bool = False  # Track if this was fetched from a link
     duration: Optional[float] = None  # Duration in seconds, when known
     order: tuple = (0, 0)  # Position to upload in - see get_audio_files()
-
-    def __eq__(self, other):
-        return self.title == other.title
-
-    def __hash__(self):
-        # Defining __eq__ alone would set __hash__ to None, making these unhashable
-        return hash(self.title)
 
 # Populated by parse_args(). Module level so every function can read it, but set
 # explicitly rather than at import, which keeps this file importable (and testable)
@@ -300,8 +293,8 @@ def get_audio_duration(audio_path):
     opens the file - never the -f null - full decode detect_silence_end needs for its
     own, genuinely different job of analysing the audio. On a short test clip the
     difference is invisible; on a real video (a phone recording, a screen capture) a
-    full decode can take as long as playing the file, for a GUI preview that promises
-    to stay cheap. Without an output, ffmpeg exits non-zero ("must specify an output
+    full decode can take as long as playing the file, for a check that should
+    stay cheap. Without an output, ffmpeg exits non-zero ("must specify an output
     file") after printing that banner - the exit code is not checked here, only the
     line already written to stderr by that point.
 
@@ -428,6 +421,7 @@ def convert_video_to_audio(video_path, output_dir=None):
     
     if output_dir is None:
         output_dir = tempfile.gettempdir()
+    os.makedirs(output_dir, exist_ok=True)
     
     # Create output filename
     base_name = video_path.stem
@@ -617,14 +611,16 @@ def get_audio_files(input_paths):
                 temp_dir = tempfile.mkdtemp(prefix="tonie_converted_")
                 logging.info(f"Using temporary directory for converted files: {temp_dir}")
             else:
-                # Each video's converted file is saved alongside it, since there is no
-                # longer a single input directory to collect them in.
-                logging.info("Converted files will be saved alongside their source videos")
+                # Each video's converted file goes in a "converted" folder beside it. Not
+                # beside the video itself: the next scan of that folder would pick the
+                # MP3 up as audio and convert the video again, a duplicate chapter a run.
+                logging.info("Converted files will be saved in a 'converted' folder "
+                             "beside their source videos")
 
             for video_file in video_files:
                 try:
                     if args.keep_converted:
-                        temp_dir = os.path.dirname(video_file)
+                        temp_dir = os.path.join(os.path.dirname(video_file), "converted")
                     audio_file_path = convert_video_to_audio(video_file, temp_dir)
                     title = os.path.splitext(os.path.basename(video_file))[0]
                     # Truncate title to 100 characters
@@ -648,8 +644,7 @@ def get_audio_files(input_paths):
 
     # Order chapters the way they were given - by -i argument, then by discovery order
     # within a folder or a downloaded playlist - rather than resorting them, so the
-    # order a source list is arranged in (the GUI lets this be rearranged) is the order
-    # they upload in.
+    # order a source list is arranged in is the order they upload in.
     audio_files.sort(key=lambda x: x.order)
 
     # Store converted files list for cleanup. Done before the duration check so that
@@ -1144,9 +1139,8 @@ def existing_chapter_titles(tonie):
 class AutoReauthAPI:
     """Wraps a TonieAPI so an expired session token is quietly renewed.
 
-    Tonie Cloud issues short-lived access tokens, acquired once (at CLI startup, or
-    at GUI sign-in) and then reused for whatever comes next - browsing sources,
-    downloading and converting several YouTube videos - so the token can easily be
+    Tonie Cloud issues short-lived access tokens, acquired once at startup and then
+    reused for whatever comes next - downloading and converting several YouTube videos - so the token can easily be
     stale by the time the first real write happens.
 
     Worse, the tonie_api library treats a failed request as an empty success rather
@@ -1208,13 +1202,37 @@ class AutoReauthAPI:
                 return getattr(self._api, name)(*args, **kwargs)
         return call
 
-def upload_with_retries(tonie_api, tonie, audio_file):
+def fetch_tonie(tonie_api, tonie):
+    """This Tonie as Tonie Cloud holds it now, or None if it is not found."""
+    for household in tonie_api.get_households():
+        for fresh in tonie_api.get_all_creative_tonies_by_household(household):
+            if fresh.id == tonie.id:
+                return fresh
+    return None
+
+def chapter_landed(tonie_api, tonie, uploaded_before):
+    """True if the Tonie already holds more than uploaded_before chapters.
+
+    An upload's last step adds the chapter. If that request reached the server but
+    its answer was lost, the upload looks failed although the chapter is there, and
+    sending the file again would add it twice. Any doubt counts as not landed.
+    """
+    try:
+        fresh = fetch_tonie(tonie_api, tonie)
+    except Exception:
+        return False
+    return fresh is not None and len(fresh.chapters or []) > uploaded_before
+
+def upload_with_retries(tonie_api, tonie, audio_file, uploaded_before=0):
     """Upload one file, retrying a transient failure.
 
     A Tonie's chapters have already been cleared by the time uploading starts - the
     90 minute limit is on a Tonie's total content, so new audio cannot be added
     alongside the old and the clear cannot be deferred. That makes a dropped
     connection mid-upload expensive, so it is worth a few attempts.
+
+    uploaded_before is how many chapters the Tonie held before this file, so a retry
+    can tell whether the failed attempt landed after all.
     """
     attempts = max(1, args.upload_retries)
     delay = args.retry_delay
@@ -1224,6 +1242,10 @@ def upload_with_retries(tonie_api, tonie, audio_file):
             tonie_api.upload_file_to_tonie(tonie, audio_file.filepath, audio_file.title)
             return
         except Exception as e:
+            if chapter_landed(tonie_api, tonie, uploaded_before):
+                logging.warning(f"Upload of '{audio_file.title}' reported an error ({e}), "
+                                f"but the chapter is on the Tonie - not sending it again")
+                return
             if attempt == attempts:
                 logging.error(f"Giving up on '{audio_file.title}' after {attempts} "
                               f"attempts: {e}")
@@ -1236,13 +1258,8 @@ def upload_with_retries(tonie_api, tonie, audio_file):
                 time.sleep(delay)
             delay *= 2
 
-def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False,
-                 should_cancel=None):
-    """Update a single Creative Tonie with audio files
-
-    should_cancel is polled before each file; returning True stops the upload and
-    leaves the Tonie incomplete, which the caller is expected to report.
-    """
+def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False):
+    """Update a single Creative Tonie with audio files"""
     household = tonie_households.get(tonie.id, 'Unknown')
     logging.info(f"{'[DRY RUN] ' if dry_run else ''}Updating '{tonie.name}' (Household: {household}) with {len(audio_files)} files")
     
@@ -1260,17 +1277,10 @@ def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False,
         
         # Upload new files
         for i, audio_file in enumerate(audio_files, 1):
-            if should_cancel is not None and should_cancel():
-                logging.warning(f"Cancelled after {i - 1} of {len(audio_files)} files. "
-                                f"'{tonie.name}' is incomplete.")
-                if previous_titles:
-                    logging.warning(f"These chapters were cleared and are no longer on "
-                                    f"'{tonie.name}': {previous_titles}")
-                return
             status = describe_audio_file(audio_file)
             logging.info(f"Uploading ({i}/{len(audio_files)}): {audio_file.title}{status}")
             try:
-                upload_with_retries(tonie_api, tonie, audio_file)
+                upload_with_retries(tonie_api, tonie, audio_file, uploaded_before=i - 1)
             except Exception:
                 logging.error(f"'{tonie.name}' is now incomplete: {i - 1} of "
                               f"{len(audio_files)} files uploaded")
@@ -1281,15 +1291,9 @@ def update_tonie(tonie_api, tonie, tonie_households, audio_files, dry_run=False,
         
         # After upload, refresh the tonie data to get updated chapters
         try:
-            # Refresh tonie data by getting it again from API
-            households = tonie_api.get_households()
-            for household in households:
-                creative_tonies = tonie_api.get_all_creative_tonies_by_household(household)
-                for updated_tonie in creative_tonies:
-                    if updated_tonie.id == tonie.id:
-                        # Copy updated chapters back to original tonie object
-                        tonie.chapters = updated_tonie.chapters
-                        break
+            fresh = fetch_tonie(tonie_api, tonie)
+            if fresh is not None:
+                tonie.chapters = fresh.chapters
         except Exception as e:
             logging.warning(f"Could not refresh tonie data after upload: {e}")
     else:
@@ -1420,7 +1424,11 @@ def main(argv=None):
         
         # Clean up converted files
         cleanup_converted_files()
-        
+
+        # A cron job reads only the exit code, and a failed Tonie is left cleared
+        if successful_updates < len(updates_needed):
+            sys.exit(1)
+
     except Exception as ex:
         logging.error(f"Error: {ex}", exc_info=True)
         cleanup_converted_files()
