@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0] - 2026-11-21
+
 ### Removed
 - The Qt (PySide6) desktop app in `gui/`, its PyInstaller build and its tests. The
   SwiftUI app in `mac/` is the macOS app now; `tony.py` remains the command line.

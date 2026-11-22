@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP="dist/Tonie Audio Updater.app"
-VERSION="${VERSION:-6.0}"
+VERSION="${VERSION:-7.0}"
 
 swift build -c release --product TonieUpdater
 BIN="$(swift build -c release --show-bin-path)/TonieUpdater"
