@@ -1,8 +1,7 @@
 import Foundation
 import Security
 
-/// The account password lives only in the login Keychain, under the same service name
-/// the Qt app uses, so a password it saved is found here too. The username is not a
+/// The account password lives only in the login Keychain. The username is not a
 /// secret and lives in UserDefaults to prefill the sign-in sheet.
 public enum Account {
     static let service = "tonie-audio-updater"

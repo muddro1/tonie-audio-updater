@@ -104,6 +104,7 @@ func uniquePath(_ dir: String, _ base: String, _ ext: String) -> String {
 
 /// An MP3 of the video's sound, with its trailing silence cut when trimming is on.
 func convertVideo(_ video: String, into dir: String, _ o: Options, log: Log) throws -> String {
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     let output = uniquePath(dir, stem(video), "mp3")
     log("Converting video to audio: \(fileName(video)) -> \(fileName(output))")
 

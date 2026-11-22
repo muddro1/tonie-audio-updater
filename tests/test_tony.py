@@ -105,13 +105,6 @@ def test_parser_rejects_a_non_numeric_max_duration():
                                        "--max-duration", "ninety"])
 
 
-# --- AudioTitle ------------------------------------------------------------
-
-def test_audio_titles_compare_by_title_only():
-    assert tony.AudioTitle("/one.mp3", "Same") == tony.AudioTitle("/two.mp3", "Same")
-    assert tony.AudioTitle("/one.mp3", "A") != tony.AudioTitle("/one.mp3", "B")
-
-
 # --- get_audio_duration ----------------------------------------------------
 
 @requires_ffmpeg
@@ -556,6 +549,38 @@ def test_a_transient_upload_failure_is_retried(configure):
     ]
 
 
+class LostAnswerAPI(FakeAPI):
+    """Adds the chapter, then loses the answer - the server got it, the client did not."""
+
+    def __init__(self):
+        super().__init__()
+        self.tonie = FakeTonie()
+        self.lost = False
+
+    def upload_file_to_tonie(self, tonie, filepath, title):
+        self.calls.append(f"upload:{title}")
+        self.tonie.chapters.append(SimpleNamespace(title=title))
+        if not self.lost:
+            self.lost = True
+            raise ConnectionError("read timed out")
+
+    def get_households(self):
+        return ["home"]
+
+    def get_all_creative_tonies_by_household(self, household):
+        return [self.tonie]
+
+
+def test_a_retry_does_not_add_a_chapter_that_already_landed(configure):
+    configure("--upload-retries", "3", "--retry-delay", "0")
+    api = LostAnswerAPI()
+
+    tony.update_tonie(api, FakeTonie(), {"t1": "Home"},
+                      [tony.AudioTitle("/a.mp3", "One"), tony.AudioTitle("/b.mp3", "Two")])
+
+    assert [c.title for c in api.tonie.chapters] == ["One", "Two"]
+
+
 def test_an_upload_that_keeps_failing_raises(configure):
     configure("--upload-retries", "2", "--retry-delay", "0")
     api = FakeAPI(fail_on="One", fail_times=99)
@@ -859,12 +884,6 @@ def test_force_update_overrides_everything(configure):
 
 # --- small cleanups -------------------------------------------------------
 
-def test_audio_titles_can_go_in_a_set():
-    """Defining __eq__ without __hash__ makes a class unhashable."""
-    assert len({tony.AudioTitle("/a.mp3", "Same"),
-                tony.AudioTitle("/b.mp3", "Same")}) == 1
-
-
 def test_min_silence_duration_is_parsed_as_a_number():
     a = tony.build_parser().parse_args(["-i", "/tmp", "--min-silence-duration", "3.5"])
     assert a.min_silence_duration == 3.5
@@ -920,3 +939,24 @@ def test_end_of_input_at_the_credential_prompt_is_a_clean_error(monkeypatch):
 
     with pytest.raises(ValueError, match="[Nn]o username"):
         tony.resolve_credentials(a)
+
+
+# --- kept conversions -------------------------------------------------------
+
+@requires_ffmpeg
+def test_a_kept_conversion_is_not_uploaded_again_on_the_next_run(configure, tmp_path):
+    """Kept beside the video, the MP3 was rescanned as audio and the video converted
+    again - one more chapter every run."""
+    import subprocess
+    from conftest import FFMPEG
+    subprocess.run([FFMPEG, "-loglevel", "error", "-f", "lavfi",
+                    "-i", "sine=duration=2", "-c:a", "aac", "-y",
+                    str(tmp_path / "Story.mp4")], check=True)
+    configure("--keep-converted", "--convert-video", "--no-duration-limit")
+
+    first = tony.get_audio_files([str(tmp_path)])
+    second = tony.get_audio_files([str(tmp_path)])
+
+    assert [f.title for f in first] == ["Story"]
+    assert [f.title for f in second] == ["Story"]
+    assert os.path.dirname(first[0].filepath) == str(tmp_path / "converted")

@@ -10,6 +10,8 @@ main() catches everything and exits 1, so a failure is read from the log rather 
 from the exception: the message is what tells the URL-rejection bug apart from any
 other failure.
 """
+from types import SimpleNamespace
+
 import pytest
 
 import tony
@@ -70,3 +72,32 @@ def test_a_real_local_path_is_accepted(no_network, caplog, tmp_path):
 
     assert "Input path does not exist" not in text
     assert "reached the Tonie API" in text
+
+
+def test_a_failed_upload_exits_non_zero(monkeypatch, tmp_path, caplog):
+    """A cron job reads only the exit code; a Tonie left cleared must not read as success."""
+    pytest.importorskip("tonie_api")
+    (tmp_path / "One.mp3").write_bytes(b"")
+
+    tonie = SimpleNamespace(id="t1", name="Lion", chapters=[])
+
+    class FailingAPI:
+        def __init__(self, username, password):
+            pass
+
+        def get_households(self):
+            return [SimpleNamespace(name="Home")]
+
+        def get_all_creative_tonies_by_household(self, household):
+            return [tonie]
+
+        def clear_all_chapter_of_tonie(self, tonie):
+            pass
+
+        def upload_file_to_tonie(self, tonie, filepath, title):
+            raise ConnectionError("network went away")
+
+    monkeypatch.setattr("tonie_api.api.TonieAPI", FailingAPI)
+
+    _run(["-i", str(tmp_path), "-u", "x", "-p", "y", "--non-interactive",
+          "--no-duration-limit", "--upload-retries", "1"], caplog)

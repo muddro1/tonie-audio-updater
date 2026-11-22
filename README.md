@@ -159,7 +159,7 @@ python tony.py -i /path/to/files --no-duration-limit
 | `--ffmpeg-path` | Path to ffmpeg executable (default: ffmpeg) |
 | `--ytdlp-path` | Path to the yt-dlp executable, used to resolve and download links (default: yt-dlp) |
 | `--audio-bitrate` | Audio bitrate for video conversion (default: 128k) |
-| `--keep-converted` | Keep converted audio files after upload. A converted video's audio is written beside the video; a downloaded link's audio goes to `~/Downloads` |
+| `--keep-converted` | Keep converted audio files after upload. A converted video's audio is written to a `converted` folder beside the video; a downloaded link's audio goes to `~/Downloads` |
 | `--trim-silence` | Trim silence at the end of converted audio files |
 | `--silence-threshold` | Silence detection threshold (default: -50dB) |
 | `--min-silence-duration` | Minimum silence duration to trigger trimming in seconds (default: 2.0) |
@@ -170,65 +170,18 @@ python tony.py -i /path/to/files --no-duration-limit
 
 ## macOS App
 
-A native macOS GUI wraps the same engine as the `tony.py` command line: pick files,
-folders, or links (drag and drop works too); tick the Creative Tonies to update; watch
-the log; done. It stores credentials in the macOS Keychain rather than the
-environment, shows each Tonie's own picture with its current chapters (expand a row to
-see them), and shows a banner instead of a traceback when FFmpeg or yt-dlp is missing.
-
-### Running It
-
-**From source**, no build needed:
-
-```bash
-pip install -r requirements.txt -r requirements-gui.txt
-python -m gui
-```
-
-**As a built app**, unsigned:
-
-```bash
-pip install -r requirements.txt -r requirements-gui.txt -r requirements-dev.txt
-./build/build_app.sh
-```
-
-This produces `build/dist/Tonie Audio Updater.app`. It is not code-signed or notarized,
-so the first time you open it, macOS Gatekeeper refuses a double click. Right-click
-the app, choose **Open**, then **Open** again on the dialog that follows - this
-override is required only once, and macOS remembers the choice from then on.
-
-### What It Does and Does Not Bundle
-
-FFmpeg and yt-dlp are detected on `PATH` (or at the path given in Advanced options)
-rather than bundled into the app. If either is missing, a banner names which one and
-gives you the install command to copy; uploading plain audio files still works with
-neither installed, since only video conversion and links need them.
-
-### Sign-In
-
-Credentials are asked for once and, if you choose to remember them, kept in the macOS
-Keychain rather than in a file or an environment variable - the same prompt macOS
-itself uses for network passwords. Quitting and reopening the app does not ask again
-until you sign out.
-
-**Sign Out** appears beside the account button once you are signed in. It removes the
-Keychain entry and the remembered username and empties the Creative Tonie list, so the
-next launch asks for credentials again.
-
-## Native SwiftUI App
-
-`mac/` holds a native SwiftUI version of the macOS app: the same window and options,
-with the whole engine (Tonie Cloud sign-in and upload, conversion, trimming, the
-duration limit) ported to Swift, so it needs no Python. FFmpeg and yt-dlp are still
-used from Homebrew. It needs macOS 14 or later and only the Xcode command line tools:
+`mac/` holds a native SwiftUI app: pick files, folders, or links (drag and drop works
+too), tick the Creative Tonies to update, watch the log. The whole engine (Tonie Cloud
+sign-in and upload, conversion, trimming, the duration limit) is ported to Swift, so it
+needs no Python. FFmpeg and yt-dlp are still used from Homebrew. It keeps the password
+in the macOS Keychain. It needs macOS 14 or later and only the Xcode command line tools:
 
 ```bash
 mac/build_app.sh                 # builds mac/dist/Tonie Audio Updater.app
 cd mac && swift run SelfTest     # the engine's checks, including real ffmpeg runs
 ```
 
-It reads a password the Python app saved in the Keychain, and caches Tonie pictures in
-the same place.
+The app is not code-signed, so the first time, right-click it and choose **Open**.
 
 ## Silence Trimming Feature
 

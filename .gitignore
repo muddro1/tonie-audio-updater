@@ -8,9 +8,6 @@ __pycache__/
 
 # Distribution / packaging
 #
-# build/ is deliberately not ignored wholesale: build/tonie_gui.spec and
-# build/build_app.sh are tracked. PyInstaller's own output directories are
-# ignored specifically, near the bottom of this file.
 .Python
 develop-eggs/
 dist/
@@ -33,7 +30,6 @@ MANIFEST
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
-#  (*.spec is not ignored here: build/tonie_gui.spec is hand-written and tracked.)
 *.manifest
 
 # Installer logs
@@ -173,9 +169,6 @@ Desktop.ini
 tonie_converted_*/
 converted_*
 
-# GUI build output
-build/build/
-build/dist/
 
 # SwiftUI app build output
 mac/.build/
